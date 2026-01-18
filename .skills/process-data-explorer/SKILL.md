@@ -3,8 +3,9 @@ name: process-data-explorer
 description: Analyze industrial process data (PV/OP time series, events, alarms) for the Control Actions project. Use when exploring parquet/CSV data, understanding tag relationships, profiling data quality, identifying PV-OP pairs, or mapping event sources to time series columns.
 metadata:
   author: control-actions-team
-  version: "1.0"
+  version: "1.1"
   target-alarm: "03LIC_1071"
+  last-run: "2026-01-18"
 ---
 
 # Process Data Explorer
@@ -18,12 +19,26 @@ Use this skill when you need to:
 - Map tag names between different data sources (knowledge graph, events, time series)
 - Generate data quality reports
 
+## Latest Run Results (Jan 2026)
+
+The scripts have been run and outputs saved to:
+- `RESULTS/timeseries_profile.json` - Full time series profile
+- `RESULTS/data_relationships.json` - Tag mapping and relationships
+
+**Key findings:**
+- 15 controllable tags (have both PV and OP)
+- 13 PV-only tags (monitoring only)
+- 1,737,586 rows of minute-wise data (2022-01-03 to 2025-06-23)
+- 41 time gaps >5 minutes (largest: 446 hours)
+- 1,861 PVLO alarm episodes for target tag
+
 ## Data Sources Overview
 
 ### 1. PV/OP Time Series (`DATA/03LIC_1071_JAN_2026.parquet`)
 - **Columns**: End with `.PV` (Process Variable) or `.OP` (Output)
+- **Special Columns**: `AlarmStatus` (ON/OFF), `AlarmType` (PVLO/blank) - these are object type, not numeric
 - **Index**: TimeStamp (minute-wise readings)
-- **Range**: 2022 to mid-2025
+- **Range**: 2022-01-03 to 2025-06-23 (~3.5 years)
 
 ### 2. Events Data (`DATA/df_df_events_1071_export.csv`)
 - **Key Columns**: `Source`, `VT_Start`, `ConditionName`, `Action`, `Value`, `PrevValue`

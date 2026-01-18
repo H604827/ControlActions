@@ -28,6 +28,18 @@ Build an automated system that:
 - **Alarm Threshold**: 28.75 (low limit)
 - **Priority**: Low
 
+### Target Tag Statistics (Verified Jan 2026)
+| Metric | PV (Level) | OP (Output) |
+|--------|------------|-------------|
+| **Mean** | 38.98 | 51.05 |
+| **Std Dev** | 4.76 | 5.61 |
+| **Min** | -1.34 | -6.88 |
+| **Max** | 105.52 | 85.00 |
+| **Q25/Q50/Q75** | 35.48/38.96/41.80 | - |
+| **IQR** | 6.32 | - |
+
+**Note**: Mean PV (38.98) is well above alarm threshold (28.75). Q25 is 35.48, meaning 75% of readings are above this value.
+
 ### Process Response Dynamics (Key Research Area)
 - **Critical Question**: For each PV/OP tag pair, how long does it take for an OP change to affect the PV?
 - **Observation**: From sample data, PV responds to OP changes relatively quickly (within minutes), but this needs to be systematically quantified
@@ -59,10 +71,14 @@ The Control Actions module is part of a larger pipeline:
 ### 1. PV/OP Time Series Data
 - **Location**: `DATA/03LIC_1071_JAN_2026.parquet` (primary), `DATA/op_pv_data.parquet` (alternative)
 - **Frequency**: Minute-wise readings
-- **Time Range**: 2022 to mid-2025
+- **Time Range**: 2022-01-03 to 2025-06-23 (~3.5 years, 1,266 days)
+- **Total Rows**: 1,737,586
+- **Total Columns**: 46 (including TimeStamp, AlarmStatus, AlarmType)
 - **Structure**: 
   - Columns ending with `.PV` = Process Variable values (sensor readings)
   - Columns ending with `.OP` = Output/Operator values (control outputs)
+  - `AlarmStatus` = 'ON' or 'OFF' (14,363 ON periods)
+  - `AlarmType` = 'PVLO' or blank
 - **Index**: TimeStamp (set with `op_pv_data_df.set_index('TimeStamp', inplace=True)`)
 - **Loading Pattern**:
 ```python
@@ -91,8 +107,9 @@ combined_pv_events_df = combined_pv_events_df.sort_values('VT_Start')
 
 ### 3. Related Tags (Knowledge Graph)
 - **Location**: `DATA/03LIC1071_PropaneLoop_0426.csv`
-- **Content**: Predefined set of related tags from knowledge graph
+- **Content**: Predefined set of 57 related tags from knowledge graph
 - **Column**: `tagName` contains the related tag names
+- **Coverage**: 21 KG tags have matching time series data, 9 are controllable (have both PV+OP)
 - **Usage**: These are potential tags that influence or are influenced by the target tag
 
 ### 4. Steady State Detection (SSD) Data
@@ -106,6 +123,69 @@ combined_pv_events_df = combined_pv_events_df.sort_values('VT_Start')
 - **Location**: `RESULTS/`
 - `alarm_episode_tag_grid.xlsx`: Which tags had CHANGE events during each alarm episode
 - `ssd_alarm_episode_tag_grid.xlsx`: Which tags were out of steady state during each alarm episode
+
+---
+
+## Verified Data Statistics (Jan 2026 Exploration)
+
+### Tag Categories in Time Series
+
+**15 Controllable Tags** (have both PV and OP - these are actionable):
+- `03FIC_1085`, `03FIC_3415`
+- `03LIC_1016`, `03LIC_1071` (TARGET), `03LIC_1085`, `03LIC_1094`, `03LIC_1097`, `03LIC_3178`
+- `03PIC_1013`, `03PIC_1068`, `03PIC_1104`, `03PIC_3131`
+- `03TIC_1092`, `03TIC_1142`, `03TIC_1145`
+
+**13 PV-Only Tags** (sensors/indicators - monitoring only):
+- `02FI_1000`, `03FIC_3435`, `03FI_1141A`, `03FI_1151`, `03FI_3418`
+- `03LI_3411`, `03PI_1141A`, `03PI_1495`, `03PI_1814`
+- `03TI_1015`, `03TI_1081`, `03TI_1421`, `03TI_1901`
+
+### Data Quality
+
+**Time Gaps (>5 minutes)**: 41 gaps total
+- Largest gap: 446 hours (~18 days)
+- Top gaps: 48-59 hours (likely plant shutdowns/maintenance)
+- Consider these gaps when analyzing alarm episodes that may span them
+
+**Missing Values**:
+- Most tags have <0.1% missing data
+- Exception: `03TIC_1142.PV` has 7% missing (121,561 rows)
+- Target tag `03LIC_1071.PV` has only 28 missing rows (~0%)
+
+### Alarm Episodes for `03LIC_1071`
+
+| Metric | Value |
+|--------|-------|
+| Total PVLO Events | 3,707 |
+| Alarm Starts | 1,861 |
+| Alarm Ends | 1,846 |
+| PVHI Events | 650 |
+
+### Events Data Overview
+
+| Metric | Value |
+|--------|-------|
+| Total Events | 1,947,510 |
+| Date Range | 2021-09-06 to 2025-06-27 |
+| Unique Sources | 928 |
+| CHANGE Events | 289,192 |
+
+**Top 5 Most Operated Tags** (CHANGE events):
+1. `03LIC_1034`: 42,554 actions
+2. `03FIC_3435`: 37,126 actions
+3. `03HIC_1151`: 26,098 actions
+4. `03PIC_1013`: 21,774 actions (KG tag!)
+5. `03HIC_3100`: 19,704 actions
+
+### Knowledge Graph Tags with Time Series Data
+
+**Controllable KG Tags** (priority candidates for action):
+- `03LCV_1016` → `03LIC_1016` (Level controller - same family as target)
+- `03LCV_1071` → `03LIC_1071` (TARGET)
+- `03PICA_1013` → `03PIC_1013` (Pressure controller - highly operated)
+- `03TIC_1142`, `03TIC_1145` (Temperature controllers)
+- `03TCV_1142`, `03TCV_1145`
 
 ---
 
@@ -337,14 +417,18 @@ ControlActions/
 │   ├── response-dynamics-estimator/ # Dynamics analysis skill
 │   └── operator-action-learner/   # Action learning skill
 ├── DATA/
-│   ├── 03LIC1071_PropaneLoop_0426.csv           # Related tags from KG
-│   ├── 03LIC_1071_JAN_2026.parquet              # PV/OP time series
-│   ├── df_df_events_1071_export.csv             # Events and actions
+│   ├── 03LIC1071_PropaneLoop_0426.csv           # Related tags from KG (57 tags)
+│   ├── 03LIC_1071_JAN_2026.parquet              # PV/OP time series (1.7M rows)
+│   ├── df_df_events_1071_export.csv             # Events and actions (1.9M events)
 │   ├── SSD_1071_SSD_output_1071_7Jan2026.xlsx   # Steady state detection
+│   ├── event_actions_1071.parquet               # Event actions (alternative)
+│   ├── op_pv_data.parquet                       # PV/OP data (alternative)
 │   └── events_1071/                              # Event subfolders
 ├── RESULTS/
 │   ├── alarm_episode_tag_grid.xlsx              # Actions per alarm episode
-│   └── ssd_alarm_episode_tag_grid.xlsx          # SSD per alarm episode
+│   ├── ssd_alarm_episode_tag_grid.xlsx          # SSD per alarm episode
+│   ├── timeseries_profile.json                  # Time series data profile (Jan 2026)
+│   └── data_relationships.json                  # Tag mapping report (Jan 2026)
 ├── 1071_control_actions.ipynb                    # Main analysis notebook
 └── eda1.ipynb                                    # Exploratory analysis
 ```
@@ -370,3 +454,5 @@ ControlActions/
 - Document findings and reasoning in notebook markdown cells
 - Consider edge cases: What if multiple alarms occur simultaneously?
 - The solution must be robust enough for production deployment eventually
+- **Use conda environment `adnoc`**: Activate with `conda activate adnoc` before running Python scripts
+- **Check RESULTS/ for existing analysis**: `timeseries_profile.json` and `data_relationships.json` contain detailed data profiles

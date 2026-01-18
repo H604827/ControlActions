@@ -73,8 +73,23 @@ def analyze_column_statistics(df: pd.DataFrame) -> dict:
         if len(col_data) == 0:
             stats[col] = {'status': 'all_null'}
             continue
+        
+        # Check if column is numeric
+        if not np.issubdtype(df[col].dtype, np.number):
+            # For non-numeric columns, provide value counts
+            value_counts = df[col].value_counts()
+            stats[col] = {
+                'dtype': str(df[col].dtype),
+                'count': int(len(col_data)),
+                'missing': int(df[col].isnull().sum()),
+                'missing_pct': float(df[col].isnull().sum() / len(df) * 100),
+                'unique_values': int(df[col].nunique()),
+                'top_values': value_counts.head(5).to_dict()
+            }
+            continue
             
         stats[col] = {
+            'dtype': str(df[col].dtype),
             'count': int(len(col_data)),
             'missing': int(df[col].isnull().sum()),
             'missing_pct': float(df[col].isnull().sum() / len(df) * 100),
