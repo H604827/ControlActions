@@ -3,11 +3,17 @@ name: operator-action-learner
 description: Analyze historical operator actions (CHANGE events) to learn intervention patterns, action magnitudes, directions, and sequencing for the Control Actions project. Use when understanding what actions operators take during alarms, learning action magnitudes, or building training data for ML models.
 metadata:
   author: control-actions-team
-  version: "1.0"
+  version: "2.0"
   target-alarm: "03LIC_1071"
 ---
 
 # Operator Action Learner
+
+## Version 2.0 Updates
+
+- **Trip Period Filtering**: Automatically excludes data during plant trips
+- **Date Range Filtering**: Focus analysis on specific time periods
+- **Shared Preprocessing**: Uses centralized `shared/data_loader.py` for consistent data handling
 
 ## When to Use This Skill
 
@@ -18,6 +24,34 @@ Use this skill when you need to:
 - Learn sequencing patterns (which tags are operated first?)
 - Build training datasets for ML models
 - Correlate action patterns with alarm resolution success
+
+## Quick Start
+
+```bash
+# Analyze action magnitudes for 2025 data (with trip filtering)
+python .skills/operator-action-learner/scripts/analyze_action_magnitudes.py \
+    --start-date 2025-01-01 --end-date 2025-06-30
+
+# Extract action sequences during alarm episodes
+python .skills/operator-action-learner/scripts/extract_action_sequences.py \
+    --start-date 2025-01-01 --end-date 2025-06-30
+
+# Build ML training features (filtered)
+python .skills/operator-action-learner/scripts/build_training_features.py \
+    --start-date 2025-01-01 --end-date 2025-06-30 \
+    --output-file RESULTS/training_features_2025.csv
+```
+
+## CLI Options
+
+All scripts support these common options:
+- `--start-date YYYY-MM-DD`: Filter data from this date
+- `--end-date YYYY-MM-DD`: Filter data until this date
+- `--trip-file PATH`: Path to trip duration file (default: DATA/Final_List_Trip_Duration.csv)
+- `--no-trip-filter`: Disable trip period filtering
+- `--recent`: Analyze only recent 6 months
+- `--last-year`: Analyze only last year of data
+- `--output-json`: Output results in JSON format
 
 ## Core Concept
 

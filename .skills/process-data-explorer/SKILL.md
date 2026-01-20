@@ -3,12 +3,18 @@ name: process-data-explorer
 description: Analyze industrial process data (PV/OP time series, events, alarms) for the Control Actions project. Use when exploring parquet/CSV data, understanding tag relationships, profiling data quality, identifying PV-OP pairs, or mapping event sources to time series columns.
 metadata:
   author: control-actions-team
-  version: "1.1"
+  version: "2.0"
   target-alarm: "03LIC_1071"
   last-run: "2026-01-18"
 ---
 
 # Process Data Explorer
+
+## Version 2.0 Updates
+
+- **Trip Period Filtering**: Automatically excludes data during plant trips
+- **Date Range Filtering**: Focus analysis on specific time periods
+- **Shared Preprocessing**: Uses centralized `shared/data_loader.py` for consistent data handling
 
 ## When to Use This Skill
 
@@ -18,6 +24,28 @@ Use this skill when you need to:
 - Identify which tags have both `.PV` and `.OP` columns
 - Map tag names between different data sources (knowledge graph, events, time series)
 - Generate data quality reports
+
+## Quick Start
+
+```bash
+# Profile time series for 2025 data (with trip filtering)
+python .skills/process-data-explorer/scripts/profile_timeseries.py \
+    --start-date 2025-01-01 --end-date 2025-06-30
+
+# Map data relationships (filtered)
+python .skills/process-data-explorer/scripts/map_data_relationships.py \
+    --start-date 2025-01-01 --end-date 2025-06-30
+```
+
+## CLI Options
+
+All scripts support these common options:
+- `--start-date YYYY-MM-DD`: Filter data from this date
+- `--end-date YYYY-MM-DD`: Filter data until this date
+- `--trip-file PATH`: Path to trip duration file
+- `--no-trip-filter`: Disable trip period filtering
+- `--recent`: Analyze only recent 6 months
+- `--last-year`: Analyze only last year of data
 
 ## Latest Run Results (Jan 2026)
 

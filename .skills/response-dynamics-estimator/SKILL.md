@@ -3,12 +3,20 @@ name: response-dynamics-estimator
 description: Estimate process response dynamics between OP and PV tags to determine how long control actions take to affect process variables. Use when calculating response lag, identifying cause-effect timing, or determining how quickly OP changes affect PV values in the Control Actions project.
 metadata:
   author: control-actions-team
-  version: "1.0"
+  version: "2.0"
   target-alarm: "03LIC_1071"
+  updated: "2026-01-20"
 compatibility: Requires scipy, numpy, pandas. Designed for minute-wise time series data.
 ---
 
 # Response Dynamics Estimator
+
+## What's New in v2.0 (Jan 2026)
+
+- **Trip period filtering**: Automatically excludes plant shutdown periods for cleaner analysis
+- **Date range filtering**: Analyze recent data only (recommended for better accuracy)
+- **Time-segmented comparison**: Compare dynamics across years to detect process changes
+- **Improved reporting**: Shows filtering stats and data range in outputs
 
 ## When to Use This Skill
 
@@ -198,6 +206,39 @@ Based on your hypothesis that gas processes respond quickly:
 - **Typical time constant**: 2-5 minutes for fast loops
 - **Dead time**: Usually < 2 minutes for pressure/flow, may be longer for temperature
 
+## Command Line Usage
+
+### Basic Usage (with trip filtering, full data)
+```bash
+cd /home/h604827/ControlActions
+conda activate adnoc
+python .skills/response-dynamics-estimator/scripts/estimate_dynamics.py
+```
+
+### Analyze Recent Data Only (RECOMMENDED)
+```bash
+# Last 6 months - most relevant for current process behavior
+python .skills/response-dynamics-estimator/scripts/estimate_dynamics.py --recent
+
+# Last 12 months
+python .skills/response-dynamics-estimator/scripts/estimate_dynamics.py --last-year
+
+# Custom date range
+python .skills/response-dynamics-estimator/scripts/estimate_dynamics.py \
+    --start-date 2024-01-01 --end-date 2025-06-30
+```
+
+### Compare Dynamics Across Years
+```bash
+# Detect if process dynamics have changed over time
+python .skills/response-dynamics-estimator/scripts/estimate_dynamics.py --compare-years
+```
+
+### Disable Trip Filtering (not recommended)
+```bash
+python .skills/response-dynamics-estimator/scripts/estimate_dynamics.py --no-trip-filter
+```
+
 ## Key Outputs
 
 After running this skill:
@@ -205,6 +246,7 @@ After running this skill:
 2. **Confidence scores** for each estimate
 3. **Visualization** of cross-correlation results
 4. **Step response plots** around operator actions
+5. **Filtering statistics** showing data quality
 
 ## Interpretation Guidelines
 
@@ -215,8 +257,28 @@ After running this skill:
 | 5-15 | Moderate response | Wait 15 min, observe trend |
 | >15 | Slow response | Plan actions carefully, avoid overcorrection |
 
-## Common Issues
+## Important Considerations
 
-- **Low correlation**: Process may be nonlinear or influenced by other factors
-- **Multiple peaks**: May indicate complex dynamics or interactions
+### Why Filter Trip Periods?
+During plant trips/shutdowns:
+- PV values may flatline or show abnormal patterns
+- OP changes are for startup/shutdown, not normal control
+- Including trips will skew correlation estimates
+
+### Why Use Recent Data?
+Over 3+ years, many things change:
+- Controller tuning parameters
+- Equipment modifications
+- Process conditions
+- Sensor calibration drift
+
+**Recommendation**: Use `--recent` or `--last-year` for most accurate current dynamics.
+
+### Limitations of Linear Correlation
+Cross-correlation assumes linear relationships. Industrial processes may have:
+- Nonlinear valve characteristics
+- Operating point-dependent gain
+- Multi-variable interactions
+
+For complex cases, consider the step response analysis which is more robust.
 - **Negative lag**: Indicates PV might be leading OP (reverse causation or feedback)

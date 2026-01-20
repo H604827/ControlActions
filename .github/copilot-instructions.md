@@ -355,16 +355,29 @@ Use `plotly.graph_objects` for interactive visualizations with:
 
 The `.skills/` directory contains reusable analysis tools for this project. Each skill includes a `SKILL.md` with instructions and executable Python scripts.
 
+### Shared Module (v2.0)
+**Purpose**: Centralized data loading with trip filtering and date range support.
+**When to use**: All skills import from this module for consistent preprocessing.
+
+All skills now support:
+- `--start-date YYYY-MM-DD`: Filter data from this date
+- `--end-date YYYY-MM-DD`: Filter data until this date
+- `--no-trip-filter`: Disable trip period filtering (enabled by default)
+- `--recent`: Analyze only recent 6 months
+- `--last-year`: Analyze only last year of data
+
 ### 1. process-data-explorer
 **Purpose**: Understand and profile the available data sources.
 **When to use**: Starting analysis, understanding data structure, mapping relationships between datasets.
 
 ```bash
-# Profile time series data
-python .skills/process-data-explorer/scripts/profile_timeseries.py --file DATA/03LIC_1071_JAN_2026.parquet
+# Profile time series data (filtered to 2025)
+python .skills/process-data-explorer/scripts/profile_timeseries.py \
+    --start-date 2025-01-01 --end-date 2025-06-30
 
 # Map relationships between data sources
-python .skills/process-data-explorer/scripts/map_data_relationships.py
+python .skills/process-data-explorer/scripts/map_data_relationships.py \
+    --start-date 2025-01-01 --end-date 2025-06-30
 ```
 
 ### 2. response-dynamics-estimator
@@ -372,13 +385,12 @@ python .skills/process-data-explorer/scripts/map_data_relationships.py
 **When to use**: Understanding process dynamics, calculating response lags, time constant estimation.
 
 ```bash
-# Estimate dynamics for all OP/PV pairs
+# Estimate dynamics for recent data (filtered, with trip exclusion)
 python .skills/response-dynamics-estimator/scripts/estimate_dynamics.py \
-    --ts-file DATA/03LIC_1071_JAN_2026.parquet \
-    --events-file DATA/df_df_events_1071_export.csv
+    --start-date 2025-01-01 --end-date 2025-06-30
 
-# Visualize dynamics results
-python .skills/response-dynamics-estimator/scripts/visualize_dynamics.py
+# Compare dynamics across years
+python .skills/response-dynamics-estimator/scripts/estimate_dynamics.py --compare-years
 ```
 
 ### 3. operator-action-learner
@@ -386,20 +398,18 @@ python .skills/response-dynamics-estimator/scripts/visualize_dynamics.py
 **When to use**: Learning action magnitudes, directions, sequencing patterns, building ML training data.
 
 ```bash
-# Analyze action magnitudes
+# Analyze action magnitudes (filtered to 2025)
 python .skills/operator-action-learner/scripts/analyze_action_magnitudes.py \
-    --events-file DATA/df_df_events_1071_export.csv
+    --start-date 2025-01-01 --end-date 2025-06-30
 
 # Extract action sequences during alarm episodes
 python .skills/operator-action-learner/scripts/extract_action_sequences.py \
-    --events-file DATA/df_df_events_1071_export.csv \
-    --target-tag 03LIC_1071 --alarm-type PVLO
+    --start-date 2025-01-01 --end-date 2025-06-30
 
 # Build training features for ML
 python .skills/operator-action-learner/scripts/build_training_features.py \
-    --events-file DATA/df_df_events_1071_export.csv \
-    --ts-file DATA/03LIC_1071_JAN_2026.parquet \
-    --output-file RESULTS/training_features.csv
+    --start-date 2025-01-01 --end-date 2025-06-30 \
+    --output-file RESULTS/training_features_2025.csv
 ```
 
 All scripts support `--output-json` for machine-readable output.
@@ -413,6 +423,7 @@ ControlActions/
 ├── .github/
 │   └── copilot-instructions.md    # This file
 ├── .skills/
+│   ├── shared/                    # Shared preprocessing module (v2.0)
 │   ├── process-data-explorer/     # Data profiling skill
 │   ├── response-dynamics-estimator/ # Dynamics analysis skill
 │   └── operator-action-learner/   # Action learning skill
@@ -420,6 +431,7 @@ ControlActions/
 │   ├── 03LIC1071_PropaneLoop_0426.csv           # Related tags from KG (57 tags)
 │   ├── 03LIC_1071_JAN_2026.parquet              # PV/OP time series (1.7M rows)
 │   ├── df_df_events_1071_export.csv             # Events and actions (1.9M events)
+│   ├── Final_List_Trip_Duration.csv             # Trip/shutdown periods (107 trips)
 │   ├── SSD_1071_SSD_output_1071_7Jan2026.xlsx   # Steady state detection
 │   ├── event_actions_1071.parquet               # Event actions (alternative)
 │   ├── op_pv_data.parquet                       # PV/OP data (alternative)

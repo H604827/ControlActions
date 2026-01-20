@@ -2,13 +2,22 @@
 """
 Profile PV/OP time series data for the Control Actions project.
 Generates a comprehensive report of data structure, quality, and statistics.
+
+Usage:
+    python profile_timeseries.py --input DATA/03LIC_1071_JAN_2026.parquet
+    python profile_timeseries.py --start-date 2025-01-01 --end-date 2025-06-30
 """
 
 import pandas as pd
 import numpy as np
 from pathlib import Path
 import json
-from datetime import datetime
+import sys
+from datetime import datetime, timedelta
+
+# Add shared module to path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from shared.data_loader import load_all_data, filter_trip_periods, DataFilterStats
 
 def load_timeseries_data(filepath: str = 'DATA/03LIC_1071_JAN_2026.parquet') -> pd.DataFrame:
     """Load and prepare time series data."""
@@ -182,11 +191,78 @@ def main():
     parser = argparse.ArgumentParser(description='Profile PV/OP time series data')
     parser.add_argument('--input', '-i', default='DATA/03LIC_1071_JAN_2026.parquet',
                         help='Input parquet file path')
+    parser.add_argument('--trip-file', default='DATA/Final_List_Trip_Duration.csv',
+                        help='Path to trip duration CSV file')
     parser.add_argument('--output', '-o', default='RESULTS/timeseries_profile.json',
                         help='Output JSON report path')
+    parser.add_argument('--start-date', type=str, default=None,
+                        help='Start date (YYYY-MM-DD)')
+    parser.add_argument('--end-date', type=str, default=None,
+                        help='End date (YYYY-MM-DD)')
+    parser.add_argument('--no-trip-filter', action='store_true',
+                        help='Do not filter out trip periods')
+    parser.add_argument('--recent', action='store_true',
+                        help='Analyze only recent 6 months')
+    parser.add_argument('--last-year', action='store_true',
+                        help='Analyze only last year of data')
     args = parser.parse_args()
     
-    report = generate_profile_report(args.input)
+    # Determine date range
+    start_date = args.start_date
+    end_date = args.end_date
+    
+    if args.recent:
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(days=180)).strftime('%Y-%m-%d')
+        print(f"🕐 Analyzing recent data: {start_date} to {end_date}")
+    elif args.last_year:
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
+        print(f"🕐 Analyzing last year: {start_date} to {end_date}")
+    
+    # Load data using shared module (only need ts_df)
+    print("Loading data...")
+    ts_df, _, stats = load_all_data(
+        ts_path=args.input,
+        events_path=None,
+        trip_path=args.trip_file if not args.no_trip_filter else None,
+        start_date=start_date,
+        end_date=end_date,
+        filter_trips=not args.no_trip_filter,
+        verbose=True
+    )
+    
+    print("Analyzing tag types...")
+    tag_types = identify_tag_types(ts_df)
+    
+    print("Analyzing time gaps...")
+    gaps = analyze_time_gaps(ts_df)
+    
+    print("Calculating column statistics...")
+    col_stats = analyze_column_statistics(ts_df)
+    
+    report = {
+        'generated_at': datetime.now().isoformat(),
+        'source_file': args.input,
+        'filtering': {
+            'trips_filtered': not args.no_trip_filter,
+            'date_range_applied': start_date is not None or end_date is not None,
+            'start_date_filter': start_date,
+            'end_date_filter': end_date,
+            'rows_removed_trips': stats.ts_rows_in_trips if not args.no_trip_filter else 0
+        },
+        'overview': {
+            'total_rows': len(ts_df),
+            'total_columns': len(ts_df.columns),
+            'time_range_start': str(ts_df.index.min()),
+            'time_range_end': str(ts_df.index.max()),
+            'duration_days': (ts_df.index.max() - ts_df.index.min()).days
+        },
+        'tag_types': tag_types,
+        'time_gaps': gaps,
+        'column_statistics': col_stats
+    }
+    
     print_summary(report)
     
     # Save JSON report

@@ -2,42 +2,33 @@
 """
 Estimate process response dynamics between OP and PV tags.
 Determines how long it takes for control actions to affect process variables.
+
+Improvements (Jan 2026):
+- Trip period filtering to exclude abnormal plant states
+- Date range filtering for recent data analysis
+- Time-segmented analysis option
+- Uses shared data loader for consistent preprocessing
 """
+
+import sys
+from pathlib import Path
+
+# Add shared module to path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import pandas as pd
 import numpy as np
 from scipy import signal
 from scipy.optimize import curve_fit
-from pathlib import Path
 import json
 from datetime import datetime
+from typing import Optional, Tuple
 import warnings
 warnings.filterwarnings('ignore')
 
-
-def load_data(ts_path: str = 'DATA/03LIC_1071_JAN_2026.parquet',
-              events_path: str = 'DATA/df_df_events_1071_export.csv'):
-    """Load time series and events data."""
-    # Time series
-    ts_df = pd.read_parquet(ts_path)
-    if 'TimeStamp' in ts_df.columns:
-        ts_df.set_index('TimeStamp', inplace=True)
-    ts_df.sort_index(inplace=True)
-    
-    # Events
-    events_df = pd.read_csv(events_path, low_memory=False)
-    events_df['VT_Start'] = pd.to_datetime(events_df['VT_Start'])
-    events_df = events_df.sort_values('VT_Start')
-    
-    return ts_df, events_df
-
-
-def get_pv_op_pairs(ts_df: pd.DataFrame) -> list:
-    """Get list of tags that have both PV and OP columns."""
-    cols = ts_df.columns.tolist()
-    op_tags = {col.replace('.OP', '') for col in cols if col.endswith('.OP')}
-    pv_tags = {col.replace('.PV', '') for col in cols if col.endswith('.PV')}
-    return sorted(op_tags & pv_tags)
+# Import shared utilities
+from shared.data_loader import load_all_data, DataFilterStats
+from shared.tag_utils import get_pv_op_pairs
 
 
 def estimate_lag_crosscorr(pv_series: pd.Series, op_series: pd.Series, 
@@ -293,12 +284,36 @@ def analyze_all_tags(ts_df: pd.DataFrame, events_df: pd.DataFrame) -> dict:
 
 
 def generate_dynamics_report(ts_path: str = 'DATA/03LIC_1071_JAN_2026.parquet',
-                             events_path: str = 'DATA/df_df_events_1071_export.csv') -> dict:
-    """Generate comprehensive response dynamics report."""
-    print("Loading data...")
-    ts_df, events_df = load_data(ts_path, events_path)
+                             events_path: str = 'DATA/df_df_events_1071_export.csv',
+                             trip_path: Optional[str] = 'DATA/Final_List_Trip_Duration.csv',
+                             start_date: Optional[str] = None,
+                             end_date: Optional[str] = None,
+                             filter_trips: bool = True) -> dict:
+    """
+    Generate comprehensive response dynamics report.
     
-    print("Analyzing all PV/OP pairs...")
+    Args:
+        ts_path: Path to time series data
+        events_path: Path to events data
+        trip_path: Path to trip duration data (None to skip filtering)
+        start_date: Analyze data from this date (YYYY-MM-DD)
+        end_date: Analyze data until this date (YYYY-MM-DD)
+        filter_trips: Whether to exclude trip periods
+    """
+    print("Loading data...")
+    
+    # Use shared data loader for consistent preprocessing
+    ts_df, events_df, stats = load_all_data(
+        ts_path=ts_path,
+        events_path=events_path,
+        trip_path=trip_path if filter_trips else None,
+        start_date=start_date,
+        end_date=end_date,
+        filter_trips=filter_trips,
+        verbose=True  # Print filtering summary
+    )
+    
+    print("\nAnalyzing all PV/OP pairs...")
     all_results = analyze_all_tags(ts_df, events_df)
     
     # Summary statistics
@@ -313,8 +328,24 @@ def generate_dynamics_report(ts_path: str = 'DATA/03LIC_1071_JAN_2026.parquet',
             if tc < 100:  # Filter unreasonable values
                 time_constants.append(tc)
     
+    # Get actual date range of analyzed data
+    data_start = ts_df.index.min()
+    data_end = ts_df.index.max()
+    
     summary = {
         'total_tags_analyzed': len(all_results),
+        'data_range': {
+            'start': str(data_start),
+            'end': str(data_end),
+            'days': (data_end - data_start).days
+        },
+        'filtering': {
+            'trips_filtered': filter_trips,
+            'date_range_applied': start_date is not None or end_date is not None,
+            'start_date_filter': start_date,
+            'end_date_filter': end_date,
+            'rows_removed_trips': stats.ts_rows_in_trips if filter_trips else 0
+        },
         'lag_statistics': {
             'mean_minutes': float(np.mean(lags)) if lags else None,
             'median_minutes': float(np.median(lags)) if lags else None,
@@ -345,6 +376,18 @@ def print_summary(report: dict):
     summary = report['summary']
     print(f"\n📊 Overview:")
     print(f"   Tags analyzed: {summary['total_tags_analyzed']}")
+    
+    # Show data range and filtering info
+    if 'data_range' in summary:
+        dr = summary['data_range']
+        print(f"   Data range: {dr['start'][:10]} to {dr['end'][:10]} ({dr['days']} days)")
+    
+    if 'filtering' in summary:
+        filt = summary['filtering']
+        if filt['trips_filtered']:
+            print(f"   Trip periods filtered: Yes ({filt['rows_removed_trips']:,} rows removed)")
+        if filt['date_range_applied']:
+            print(f"   Date filter: {filt['start_date_filter'] or 'start'} to {filt['end_date_filter'] or 'end'}")
     
     lag_stats = summary['lag_statistics']
     if lag_stats['mean_minutes'] is not None:
@@ -392,6 +435,86 @@ def print_summary(report: dict):
             print(f"   Dead time: {tc['dead_time_minutes']} min")
 
 
+def compare_time_periods(ts_path: str, events_path: str, trip_path: str,
+                         periods: list, output_path: str = None) -> dict:
+    """
+    Compare response dynamics across different time periods.
+    
+    Args:
+        ts_path: Path to time series data
+        events_path: Path to events data
+        trip_path: Path to trip duration data
+        periods: List of dicts with 'name', 'start_date', 'end_date'
+        output_path: Optional path to save comparison report
+    
+    Returns:
+        Comparison report dict
+    """
+    print("=" * 60)
+    print("TIME-SEGMENTED DYNAMICS COMPARISON")
+    print("=" * 60)
+    
+    comparison = {
+        'generated_at': datetime.now().isoformat(),
+        'periods': {}
+    }
+    
+    for period in periods:
+        name = period['name']
+        print(f"\n📅 Analyzing period: {name}")
+        print(f"   Date range: {period['start_date']} to {period['end_date']}")
+        
+        report = generate_dynamics_report(
+            ts_path=ts_path,
+            events_path=events_path,
+            trip_path=trip_path,
+            start_date=period['start_date'],
+            end_date=period['end_date'],
+            filter_trips=True
+        )
+        
+        comparison['periods'][name] = {
+            'start_date': period['start_date'],
+            'end_date': period['end_date'],
+            'summary': report['summary'],
+            'tag_results': report['tag_results']
+        }
+    
+    # Generate comparison summary
+    print("\n" + "=" * 60)
+    print("COMPARISON SUMMARY")
+    print("=" * 60)
+    
+    # Compare target tag across periods
+    target_tag = '03LIC_1071'
+    print(f"\n🎯 Target Tag ({target_tag}) Comparison:")
+    print(f"{'Period':<20} {'Lag (min)':<12} {'Settling (min)':<15} {'Correlation':<12}")
+    print("-" * 60)
+    
+    for name, data in comparison['periods'].items():
+        if target_tag in data['tag_results']:
+            result = data['tag_results'][target_tag]
+            lag = result.get('cross_correlation', {}).get('optimal_lag_minutes', 'N/A')
+            settling = result.get('step_response', {}).get('settling_time', {}).get('median_minutes', 'N/A')
+            corr = result.get('cross_correlation', {}).get('correlation_strength', 'N/A')
+            
+            if isinstance(settling, float):
+                settling = f"{settling:.1f}"
+            if isinstance(corr, float):
+                corr = f"{corr:.2f}"
+            
+            print(f"{name:<20} {str(lag):<12} {str(settling):<15} {str(corr):<12}")
+    
+    if output_path:
+        output_p = Path(output_path)
+        output_p.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_p, 'w') as f:
+            json.dump(comparison, f, indent=2, default=str)
+        print(f"\n✅ Comparison report saved to: {output_path}")
+    
+    return comparison
+
+
 def main():
     """Main entry point."""
     import argparse
@@ -400,13 +523,67 @@ def main():
                         help='Time series parquet file')
     parser.add_argument('--events-input', default='DATA/df_df_events_1071_export.csv',
                         help='Events CSV file')
+    parser.add_argument('--trip-input', default='DATA/Final_List_Trip_Duration.csv',
+                        help='Trip duration CSV file')
     parser.add_argument('--output', '-o', default='RESULTS/response_dynamics.json',
                         help='Output JSON report path')
     parser.add_argument('--tag', '-t', default=None,
                         help='Analyze only this specific tag')
+    parser.add_argument('--start-date', default=None,
+                        help='Start date for analysis (YYYY-MM-DD). Use for recent data analysis.')
+    parser.add_argument('--end-date', default=None,
+                        help='End date for analysis (YYYY-MM-DD)')
+    parser.add_argument('--no-trip-filter', action='store_true',
+                        help='Disable trip period filtering')
+    parser.add_argument('--recent', action='store_true',
+                        help='Analyze only last 6 months of data (recommended)')
+    parser.add_argument('--last-year', action='store_true',
+                        help='Analyze only last 12 months of data')
+    parser.add_argument('--compare-years', action='store_true',
+                        help='Compare dynamics across years (2022, 2023, 2024, 2025)')
     args = parser.parse_args()
     
-    report = generate_dynamics_report(args.ts_input, args.events_input)
+    # Handle year comparison mode
+    if args.compare_years:
+        periods = [
+            {'name': '2022', 'start_date': '2022-01-01', 'end_date': '2022-12-31'},
+            {'name': '2023', 'start_date': '2023-01-01', 'end_date': '2023-12-31'},
+            {'name': '2024', 'start_date': '2024-01-01', 'end_date': '2024-12-31'},
+            {'name': '2025 (YTD)', 'start_date': '2025-01-01', 'end_date': '2025-12-31'},
+        ]
+        compare_time_periods(
+            args.ts_input, args.events_input, args.trip_input,
+            periods, 'RESULTS/response_dynamics_yearly_comparison.json'
+        )
+        return
+    
+    # Handle convenience date range options
+    start_date = args.start_date
+    end_date = args.end_date
+    
+    if args.recent:
+        # Last 6 months
+        end_dt = datetime.now()
+        start_dt = end_dt - pd.Timedelta(days=180)
+        start_date = start_dt.strftime('%Y-%m-%d')
+        end_date = end_dt.strftime('%Y-%m-%d')
+        print(f"🕐 Analyzing recent data: {start_date} to {end_date}")
+    elif args.last_year:
+        # Last 12 months
+        end_dt = datetime.now()
+        start_dt = end_dt - pd.Timedelta(days=365)
+        start_date = start_dt.strftime('%Y-%m-%d')
+        end_date = end_dt.strftime('%Y-%m-%d')
+        print(f"🕐 Analyzing last year: {start_date} to {end_date}")
+    
+    report = generate_dynamics_report(
+        ts_path=args.ts_input,
+        events_path=args.events_input,
+        trip_path=args.trip_input if not args.no_trip_filter else None,
+        start_date=start_date,
+        end_date=end_date,
+        filter_trips=not args.no_trip_filter
+    )
     print_summary(report)
     
     # Save JSON report

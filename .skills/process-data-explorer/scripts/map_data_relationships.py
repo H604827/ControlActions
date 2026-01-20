@@ -2,64 +2,23 @@
 """
 Map relationships between different data sources in the Control Actions project.
 Connects time series columns, event sources, and knowledge graph tags.
+
+Usage:
+    python map_data_relationships.py
+    python map_data_relationships.py --start-date 2025-01-01 --end-date 2025-06-30
 """
 
 import pandas as pd
 import numpy as np
 from pathlib import Path
 import json
-from datetime import datetime
+import sys
+from datetime import datetime, timedelta
 
-
-def strings_similar(s1: str, s2: str) -> bool:
-    """
-    Check if two tag names are similar (handles naming variations).
-    First 3 characters must match exactly.
-    Characters after underscore must match or have 4+ char common substring.
-    """
-    s1 = str(s1).strip().replace(' ', '').upper()
-    s2 = str(s2).strip().replace(' ', '').upper()
-    
-    if len(s1) < 3 or len(s2) < 3:
-        return False
-    if s1[:3] != s2[:3]:
-        return False
-    
-    if '_' not in s1 or '_' not in s2:
-        return False
-    
-    s1_after = s1.split('_', 1)[1]
-    s2_after = s2.split('_', 1)[1]
-    
-    if s1_after == s2_after:
-        return True
-    
-    shorter = s1_after if len(s1_after) <= len(s2_after) else s2_after
-    longer = s2_after if len(s1_after) <= len(s2_after) else s1_after
-    
-    for i in range(len(shorter) - 3):
-        if shorter[i:i+4] in longer:
-            return True
-    return False
-
-
-def load_all_data():
-    """Load all data sources."""
-    # Time series
-    ts_df = pd.read_parquet('DATA/03LIC_1071_JAN_2026.parquet')
-    if 'TimeStamp' in ts_df.columns:
-        ts_df.set_index('TimeStamp', inplace=True)
-    ts_df.sort_index(inplace=True)
-    
-    # Events
-    events_df = pd.read_csv('DATA/df_df_events_1071_export.csv', low_memory=False)
-    events_df['VT_Start'] = pd.to_datetime(events_df['VT_Start'])
-    events_df = events_df.sort_values('VT_Start')
-    
-    # Knowledge graph tags
-    kg_df = pd.read_csv('DATA/03LIC1071_PropaneLoop_0426.csv')
-    
-    return ts_df, events_df, kg_df
+# Add shared module to path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from shared.data_loader import load_all_data as shared_load_all_data, DataFilterStats
+from shared.tag_utils import strings_similar, get_pv_op_pairs, categorize_tags
 
 
 def map_event_sources_to_timeseries(ts_df: pd.DataFrame, events_df: pd.DataFrame) -> dict:
@@ -195,10 +154,10 @@ def analyze_change_events(events_df: pd.DataFrame) -> dict:
     }
 
 
-def generate_relationship_report() -> dict:
+def generate_relationship_report(ts_df: pd.DataFrame, events_df: pd.DataFrame) -> dict:
     """Generate comprehensive relationship mapping report."""
-    print("Loading data sources...")
-    ts_df, events_df, kg_df = load_all_data()
+    # Load knowledge graph tags separately (not affected by trip/date filtering)
+    kg_df = pd.read_csv('DATA/03LIC1071_PropaneLoop_0426.csv')
     
     print("Mapping event sources to time series...")
     event_ts_mapping = map_event_sources_to_timeseries(ts_df, events_df)
@@ -264,11 +223,63 @@ def main():
     """Main entry point."""
     import argparse
     parser = argparse.ArgumentParser(description='Map relationships between data sources')
+    parser.add_argument('--ts-file', default='DATA/03LIC_1071_JAN_2026.parquet',
+                        help='Path to time series parquet file')
+    parser.add_argument('--events-file', default='DATA/df_df_events_1071_export.csv',
+                        help='Path to events CSV file')
+    parser.add_argument('--trip-file', default='DATA/Final_List_Trip_Duration.csv',
+                        help='Path to trip duration CSV file')
     parser.add_argument('--output', '-o', default='RESULTS/data_relationships.json',
                         help='Output JSON report path')
+    parser.add_argument('--start-date', type=str, default=None,
+                        help='Start date (YYYY-MM-DD)')
+    parser.add_argument('--end-date', type=str, default=None,
+                        help='End date (YYYY-MM-DD)')
+    parser.add_argument('--no-trip-filter', action='store_true',
+                        help='Do not filter out trip periods')
+    parser.add_argument('--recent', action='store_true',
+                        help='Analyze only recent 6 months')
+    parser.add_argument('--last-year', action='store_true',
+                        help='Analyze only last year of data')
     args = parser.parse_args()
     
-    report = generate_relationship_report()
+    # Determine date range
+    start_date = args.start_date
+    end_date = args.end_date
+    
+    if args.recent:
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(days=180)).strftime('%Y-%m-%d')
+        print(f"🕐 Analyzing recent data: {start_date} to {end_date}")
+    elif args.last_year:
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
+        print(f"🕐 Analyzing last year: {start_date} to {end_date}")
+    
+    # Load data using shared module
+    print("Loading data sources...")
+    ts_df, events_df, stats = shared_load_all_data(
+        ts_path=args.ts_file,
+        events_path=args.events_file,
+        trip_path=args.trip_file if not args.no_trip_filter else None,
+        start_date=start_date,
+        end_date=end_date,
+        filter_trips=not args.no_trip_filter,
+        verbose=True
+    )
+    
+    report = generate_relationship_report(ts_df, events_df)
+    
+    # Add filtering info to report
+    report['filtering'] = {
+        'trips_filtered': not args.no_trip_filter,
+        'date_range_applied': start_date is not None or end_date is not None,
+        'start_date_filter': start_date,
+        'end_date_filter': end_date,
+        'rows_removed_trips_ts': stats.ts_rows_in_trips if not args.no_trip_filter else 0,
+        'rows_removed_trips_events': stats.events_rows_in_trips if not args.no_trip_filter else 0
+    }
+    
     print_summary(report)
     
     # Save JSON report

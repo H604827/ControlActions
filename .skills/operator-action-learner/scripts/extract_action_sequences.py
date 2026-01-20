@@ -10,6 +10,10 @@ Usage:
         --events-file DATA/df_df_events_1071_export.csv \
         --target-tag 03LIC_1071 \
         --alarm-type PVLO
+    
+    # With trip filtering and date range:
+    python extract_action_sequences.py \
+        --start-date 2025-01-01 --end-date 2025-06-30
 """
 
 import argparse
@@ -17,17 +21,14 @@ import json
 import sys
 from pathlib import Path
 from typing import List, Tuple
+from datetime import datetime, timedelta
 
 import pandas as pd
 import numpy as np
 
-
-def load_events_data(events_file: str) -> pd.DataFrame:
-    """Load and preprocess events data."""
-    df = pd.read_csv(events_file, low_memory=False)
-    df['VT_Start'] = pd.to_datetime(df['VT_Start'])
-    df = df.sort_values('VT_Start')
-    return df
+# Add shared module to path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from shared.data_loader import load_all_data, filter_trip_periods, DataFilterStats
 
 
 def extract_alarm_episodes(events_df: pd.DataFrame, target_tag: str, 
@@ -220,6 +221,8 @@ def main():
     parser = argparse.ArgumentParser(description='Extract action sequences during alarm episodes')
     parser.add_argument('--events-file', type=str, default='DATA/df_df_events_1071_export.csv',
                         help='Path to events CSV file')
+    parser.add_argument('--trip-file', type=str, default='DATA/Final_List_Trip_Duration.csv',
+                        help='Path to trip duration CSV file')
     parser.add_argument('--target-tag', type=str, default='03LIC_1071',
                         help='Target tag for alarm episodes')
     parser.add_argument('--alarm-type', type=str, default='PVLO',
@@ -230,11 +233,44 @@ def main():
                         help='Output results in JSON format')
     parser.add_argument('--output-file', type=str, default=None,
                         help='Output file path (JSON)')
+    parser.add_argument('--start-date', type=str, default=None,
+                        help='Start date (YYYY-MM-DD)')
+    parser.add_argument('--end-date', type=str, default=None,
+                        help='End date (YYYY-MM-DD)')
+    parser.add_argument('--no-trip-filter', action='store_true',
+                        help='Do not filter out trip periods')
+    parser.add_argument('--recent', action='store_true',
+                        help='Analyze only recent 6 months')
+    parser.add_argument('--last-year', action='store_true',
+                        help='Analyze only last year of data')
     
     args = parser.parse_args()
     
-    # Load data
-    events_df = load_events_data(args.events_file)
+    # Determine date range
+    start_date = args.start_date
+    end_date = args.end_date
+    
+    if args.recent:
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(days=180)).strftime('%Y-%m-%d')
+        if not args.output_json:
+            print(f"🕐 Analyzing recent data: {start_date} to {end_date}")
+    elif args.last_year:
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
+        if not args.output_json:
+            print(f"🕐 Analyzing last year: {start_date} to {end_date}")
+    
+    # Load data using shared module (ts_df will be None since we only need events)
+    _, events_df, stats = load_all_data(
+        ts_path=None,
+        events_path=args.events_file,
+        trip_path=args.trip_file if not args.no_trip_filter else None,
+        start_date=start_date,
+        end_date=end_date,
+        filter_trips=not args.no_trip_filter,
+        verbose=not args.output_json
+    )
     
     # Extract alarm episodes
     episodes = extract_alarm_episodes(events_df, args.target_tag, args.alarm_type)

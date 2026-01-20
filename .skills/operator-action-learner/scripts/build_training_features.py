@@ -11,6 +11,11 @@ Usage:
         --ts-file DATA/03LIC_1071_JAN_2026.parquet \
         --target-tag 03LIC_1071 \
         --output-file RESULTS/training_features.csv
+    
+    # With trip filtering and date range:
+    python build_training_features.py \
+        --start-date 2025-01-01 --end-date 2025-06-30 \
+        --output-file RESULTS/training_features_2025.csv
 """
 
 import argparse
@@ -18,26 +23,14 @@ import json
 import sys
 from pathlib import Path
 from typing import List, Dict
+from datetime import datetime, timedelta
 
 import pandas as pd
 import numpy as np
 
-
-def load_events_data(events_file: str) -> pd.DataFrame:
-    """Load and preprocess events data."""
-    df = pd.read_csv(events_file, low_memory=False)
-    df['VT_Start'] = pd.to_datetime(df['VT_Start'])
-    df = df.sort_values('VT_Start')
-    return df
-
-
-def load_timeseries_data(ts_file: str) -> pd.DataFrame:
-    """Load time series data."""
-    df = pd.read_parquet(ts_file)
-    df.set_index('TimeStamp', inplace=True)
-    df.sort_index(inplace=True)
-    df.index = pd.to_datetime(df.index)
-    return df
+# Add shared module to path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from shared.data_loader import load_all_data, filter_trip_periods, DataFilterStats
 
 
 def get_pv_features_at_time(ts_df: pd.DataFrame, timestamp: pd.Timestamp,
@@ -269,6 +262,8 @@ def main():
                         help='Path to events CSV file')
     parser.add_argument('--ts-file', type=str, default='DATA/03LIC_1071_JAN_2026.parquet',
                         help='Path to time series parquet file')
+    parser.add_argument('--trip-file', type=str, default='DATA/Final_List_Trip_Duration.csv',
+                        help='Path to trip duration CSV file')
     parser.add_argument('--target-tag', type=str, default='03LIC_1071',
                         help='Target tag for alarm')
     parser.add_argument('--alarm-threshold', type=float, default=28.75,
@@ -277,15 +272,43 @@ def main():
                         help='Output CSV file path')
     parser.add_argument('--output-json', action='store_true',
                         help='Output summary in JSON format')
+    parser.add_argument('--start-date', type=str, default=None,
+                        help='Start date (YYYY-MM-DD)')
+    parser.add_argument('--end-date', type=str, default=None,
+                        help='End date (YYYY-MM-DD)')
+    parser.add_argument('--no-trip-filter', action='store_true',
+                        help='Do not filter out trip periods')
+    parser.add_argument('--recent', action='store_true',
+                        help='Analyze only recent 6 months')
+    parser.add_argument('--last-year', action='store_true',
+                        help='Analyze only last year of data')
     
     args = parser.parse_args()
     
-    # Load data
-    print("Loading events data...", file=sys.stderr)
-    events_df = load_events_data(args.events_file)
+    # Determine date range
+    start_date = args.start_date
+    end_date = args.end_date
     
-    print("Loading time series data...", file=sys.stderr)
-    ts_df = load_timeseries_data(args.ts_file)
+    if args.recent:
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(days=180)).strftime('%Y-%m-%d')
+        print(f"🕐 Analyzing recent data: {start_date} to {end_date}", file=sys.stderr)
+    elif args.last_year:
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
+        print(f"🕐 Analyzing last year: {start_date} to {end_date}", file=sys.stderr)
+    
+    # Load data using shared module
+    print("Loading data...", file=sys.stderr)
+    ts_df, events_df, stats = load_all_data(
+        ts_path=args.ts_file,
+        events_path=args.events_file,
+        trip_path=args.trip_file if not args.no_trip_filter else None,
+        start_date=start_date,
+        end_date=end_date,
+        filter_trips=not args.no_trip_filter,
+        verbose=True
+    )
     
     # Build dataset
     print("Building training features...", file=sys.stderr)
