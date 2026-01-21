@@ -248,6 +248,12 @@ def load_events_data(events_path: str = DEFAULT_EVENTS_PATH,
     events_df = events_df.sort_values('VT_Start')
     stats['original_rows'] = len(events_df)
     
+    # Filter by valid event categories:
+    # - Category 1: Alarm events (PVLO, PVHI, etc.)
+    # - Category 7: CHANGE events (operator actions on OP/SP values)
+    if 'Category' in events_df.columns:
+        events_df = events_df[events_df['Category'].isin([1, 7])]
+    
     # Apply date range filter
     if start_date:
         start_dt = pd.to_datetime(start_date)

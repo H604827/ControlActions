@@ -34,14 +34,11 @@ from shared.data_loader import load_all_data, filter_trip_periods, DataFilterSta
 def extract_alarm_episodes(events_df: pd.DataFrame, target_tag: str, 
                           alarm_type: str) -> List[Tuple[pd.Timestamp, pd.Timestamp]]:
     """Extract alarm episodes as (start, end) tuples."""
-    # Filter for target alarm events
+    # Filter for target alarm events (Category filtering already done by data_loader)
     alarm_events = events_df[
         (events_df['Source'] == target_tag) &
         (events_df['ConditionName'] == alarm_type)
     ].copy()
-    
-    if 'Category' in alarm_events.columns:
-        alarm_events = alarm_events[alarm_events['Category'] == 1]
     
     alarm_events = alarm_events.sort_values('VT_Start')
     

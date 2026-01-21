@@ -148,11 +148,25 @@ def analyze_step_responses(ts_df: pd.DataFrame, events_df: pd.DataFrame,
                     response_times.append(response_time)
                     break
             
-            # Find settling time (when PV stays within 5% of final)
-            threshold_95 = pv_before + 0.95 * total_change
-            for i, (ts, pv_val) in enumerate(after_data.items()):
-                if (total_change > 0 and pv_val > threshold_95) or \
-                   (total_change < 0 and pv_val < threshold_95):
+            # Find settling time (when PV STAYS within 5% band of final value)
+            # This is the rigorous control systems definition - signal must remain
+            # within the band for a minimum duration (stay_within_samples)
+            settling_band = 0.05 * abs(total_change)  # 5% of total change
+            stay_within_samples = 5  # Must stay within band for 5 consecutive samples
+            
+            after_values = list(after_data.items())
+            for i in range(len(after_values) - stay_within_samples):
+                ts, pv_val = after_values[i]
+                
+                # Check if this point and next N points are all within settling band
+                all_within_band = True
+                for j in range(stay_within_samples):
+                    _, check_pv = after_values[i + j]
+                    if abs(check_pv - pv_final) > settling_band:
+                        all_within_band = False
+                        break
+                
+                if all_within_band:
                     settling_time = (ts - event_time).total_seconds() / 60
                     settling_times.append(settling_time)
                     break
