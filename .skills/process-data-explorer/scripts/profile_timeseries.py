@@ -193,7 +193,7 @@ def main():
                         help='Input parquet file path')
     parser.add_argument('--trip-file', default='DATA/Final_List_Trip_Duration.csv',
                         help='Path to trip duration CSV file')
-    parser.add_argument('--output', '-o', default='RESULTS/timeseries_profile.json',
+    parser.add_argument('--output', '-o', default='RESULTS/process-data-explorer/timeseries_profile.json',
                         help='Output JSON report path')
     parser.add_argument('--start-date', type=str, default=None,
                         help='Start date (YYYY-MM-DD)')

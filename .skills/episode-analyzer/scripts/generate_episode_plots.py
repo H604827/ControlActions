@@ -12,7 +12,7 @@ Generates interactive HTML visualizations showing:
 Usage:
     python .skills/episode-analyzer/scripts/generate_episode_plots.py \
         --start-date 2025-01-01 --end-date 2025-06-30 \
-        --output-dir RESULTS/episode_plots
+        --output-dir RESULTS/episode-analyzer/episode_plots
 """
 
 import argparse
@@ -35,7 +35,7 @@ DEFAULT_SSD_PATH = 'DATA/SSD_1071_SSD_output_1071_7Jan2026.xlsx'
 DEFAULT_TS_PATH = 'DATA/03LIC_1071_JAN_2026.parquet'
 DEFAULT_EVENTS_PATH = 'DATA/df_df_events_1071_export.csv'
 DEFAULT_LIMITS_PATH = 'DATA/operating_limits.csv'
-DEFAULT_OUTPUT_DIR = 'RESULTS/episode_plots'
+DEFAULT_OUTPUT_DIR = 'RESULTS/episode-analyzer/episode_plots'
 
 # Target tag
 TARGET_TAG = '03LIC_1071'

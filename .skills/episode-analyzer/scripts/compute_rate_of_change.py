@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """
-Rate of Change Calculator for Alarm Episodes.
+Percentage Change Calculator for Alarm Episodes.
 
-Computes rate of change metrics for each tag within each episode:
-- Mean, max, min, std of rate of change
-- Trend direction (increasing/decreasing/stable)
-- Total change within the period
+Computes percentage change for each tag within each episode:
+- Window: from TransitionStart to the point where 03LIC_1071.PV is lowest during alarm period
+- Calculation: (final_value - initial_value) / initial_value * 100
 
 Usage:
-    python .skills/episode-analyzer/scripts/compute_rate_of_change.py \
+    python .skills/episode-analyzer/scripts/compute_rate_of_change.py \\
         --start-date 2025-01-01 --end-date 2025-06-30
 """
 
@@ -31,7 +30,7 @@ DEFAULT_OUTPUT_DIR = 'RESULTS'
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Compute rate of change metrics per episode')
+    parser = argparse.ArgumentParser(description='Compute percentage change metrics per episode')
     parser.add_argument('--start-date', type=str, help='Start date (YYYY-MM-DD)')
     parser.add_argument('--end-date', type=str, help='End date (YYYY-MM-DD)')
     parser.add_argument('--no-trip-filter', action='store_true', help='Disable trip filtering')
@@ -66,70 +65,82 @@ def get_unique_episodes(ssd_df: pd.DataFrame) -> pd.DataFrame:
     return episodes
 
 
-def compute_roc_metrics(ts_df: pd.DataFrame, start_time: pd.Timestamp, 
-                        end_time: pd.Timestamp, tag_col: str) -> dict:
-    """Compute rate of change metrics for a tag within a time window."""
-    mask = (ts_df.index >= start_time) & (ts_df.index <= end_time)
-    window_df = ts_df.loc[mask, [tag_col]].dropna()
+def find_lowest_1071_timestamp(ts_df: pd.DataFrame, alarm_start: pd.Timestamp,
+                                alarm_end: pd.Timestamp) -> pd.Timestamp:
+    """
+    Find the timestamp where 03LIC_1071.PV is at its lowest during alarm period.
+    """
+    target_col = '03LIC_1071.PV'
+    if target_col not in ts_df.columns:
+        return alarm_end
     
-    if len(window_df) < 2:
+    mask = (ts_df.index >= alarm_start) & (ts_df.index <= alarm_end)
+    alarm_window = ts_df.loc[mask, [target_col]].dropna()
+    
+    if len(alarm_window) == 0:
+        return alarm_end
+    
+    return alarm_window[target_col].idxmin()
+
+
+def compute_percentage_change(ts_df: pd.DataFrame, start_time: pd.Timestamp, 
+                               end_time: pd.Timestamp, tag_col: str) -> dict:
+    """
+    Compute percentage change for a tag from start_time to end_time.
+    
+    ROC = (final_value - initial_value) / initial_value * 100
+    """
+    # Get value at start time (or closest after)
+    start_mask = (ts_df.index >= start_time)
+    start_window = ts_df.loc[start_mask, [tag_col]].dropna()
+    
+    # Get value at end time (or closest before)
+    end_mask = (ts_df.index <= end_time)
+    end_window = ts_df.loc[end_mask, [tag_col]].dropna()
+    
+    if len(start_window) == 0 or len(end_window) == 0:
         return {
-            'mean_roc': np.nan, 'max_roc': np.nan, 'min_roc': np.nan,
-            'std_roc': np.nan, 'abs_mean_roc': np.nan,
-            'trend_direction': 'insufficient_data',
-            'start_value': np.nan, 'end_value': np.nan,
-            'total_change': np.nan, 'percent_change': np.nan,
-            'data_points': len(window_df),
-            'time_window_minutes': 0
+            'pct_change': np.nan,
+            'start_value': np.nan,
+            'end_value': np.nan,
+            'absolute_change': np.nan,
+            'start_time': str(start_time),
+            'end_time': str(end_time),
+            'data_available': False
         }
     
-    values = window_df[tag_col].values
-    times_minutes = (window_df.index - window_df.index[0]).total_seconds() / 60
+    start_val = start_window[tag_col].iloc[0]
+    start_actual_time = start_window.index[0]
+    end_val = end_window[tag_col].iloc[-1]
+    end_actual_time = end_window.index[-1]
     
-    # Calculate derivatives
-    time_diff = np.diff(times_minutes)
-    time_diff[time_diff == 0] = 1/60
-    value_diff = np.diff(values)
-    roc = value_diff / time_diff
+    absolute_change = end_val - start_val
     
-    start_val = values[0]
-    end_val = values[-1]
-    total_change = end_val - start_val
-    pct_change = (total_change / abs(start_val) * 100) if start_val != 0 else np.nan
-    
-    # Determine trend
-    if abs(total_change) < 0.01 * abs(start_val) if start_val != 0 else abs(total_change) < 0.01:
-        trend = 'stable'
-    elif total_change > 0:
-        trend = 'increasing'
+    if start_val != 0:
+        pct_change = (absolute_change / abs(start_val)) * 100
     else:
-        trend = 'decreasing'
+        pct_change = np.nan if absolute_change == 0 else np.inf * np.sign(absolute_change)
     
     return {
-        'mean_roc': float(np.nanmean(roc)),
-        'max_roc': float(np.nanmax(roc)),
-        'min_roc': float(np.nanmin(roc)),
-        'std_roc': float(np.nanstd(roc)),
-        'abs_mean_roc': float(np.nanmean(np.abs(roc))),
-        'trend_direction': trend,
+        'pct_change': float(pct_change) if not np.isinf(pct_change) else None,
         'start_value': float(start_val),
         'end_value': float(end_val),
-        'total_change': float(total_change),
-        'percent_change': float(pct_change) if not np.isnan(pct_change) else None,
-        'data_points': len(window_df),
-        'time_window_minutes': float(times_minutes[-1])
+        'absolute_change': float(absolute_change),
+        'start_time': str(start_actual_time),
+        'end_time': str(end_actual_time),
+        'data_available': True
     }
 
 
 def run_analysis(args):
-    print(f"📊 Rate of Change Analysis")
+    print(f"📊 Percentage Change Analysis")
     print(f"=" * 60)
     
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # Load data
-    print("\n📁 Loading data...")
+    print("\\n📁 Loading data...")
     ssd_df = load_ssd_data(args.ssd_file, args.start_date, args.end_date)
     episodes_df = get_unique_episodes(ssd_df)
     print(f"   Episodes: {len(episodes_df)}")
@@ -147,7 +158,7 @@ def run_analysis(args):
     print(f"   PV tags: {len(pv_cols)}")
     
     # Compute metrics
-    print(f"\n🔄 Computing rate of change metrics...")
+    print(f"\\n🔄 Computing percentage change metrics...")
     results = []
     
     for idx, episode in episodes_df.iterrows():
@@ -159,65 +170,49 @@ def run_analysis(args):
         if idx % 50 == 0:
             print(f"   Episode {ep_id}/{len(episodes_df)}...")
         
+        # Find lowest 1071 point - this determines end time for ALL tags
+        lowest_time = find_lowest_1071_timestamp(ts_df, alarm_start, alarm_end)
+        
         for tag_col in pv_cols:
-            # Transition period
-            roc_trans = compute_roc_metrics(ts_df, transition_start, alarm_start, tag_col)
-            roc_trans.update({
+            # Calculate percentage change from transition_start to lowest_time
+            pct_result = compute_percentage_change(ts_df, transition_start, lowest_time, tag_col)
+            pct_result.update({
                 'EpisodeID': ep_id,
                 'TagName': tag_col,
-                'Period': 'transition',
-                'PeriodStart': str(transition_start),
-                'PeriodEnd': str(alarm_start)
+                'TransitionStart': str(transition_start),
+                'AlarmStart': str(alarm_start),
+                'AlarmEnd': str(alarm_end),
+                'LowestPointTime': str(lowest_time)
             })
-            results.append(roc_trans)
-            
-            # Alarm period
-            roc_alarm = compute_roc_metrics(ts_df, alarm_start, alarm_end, tag_col)
-            roc_alarm.update({
-                'EpisodeID': ep_id,
-                'TagName': tag_col,
-                'Period': 'alarm',
-                'PeriodStart': str(alarm_start),
-                'PeriodEnd': str(alarm_end)
-            })
-            results.append(roc_alarm)
+            results.append(pct_result)
     
     # Convert to DataFrame
-    roc_df = pd.DataFrame(results)
+    pct_df = pd.DataFrame(results)
     
     # Save detailed results
-    output_file = output_dir / 'episode_rate_of_change_detailed.xlsx'
-    roc_df.to_excel(output_file, index=False)
-    print(f"\n💾 Saved: {output_file}")
+    output_file = output_dir / 'episode_pct_change_detailed.xlsx'
+    pct_df.to_excel(output_file, index=False)
+    print(f"\\n💾 Saved: {output_file}")
     
-    # Create pivot grids
-    for period in ['transition', 'alarm']:
-        period_df = roc_df[roc_df['Period'] == period]
-        
-        # Mean ROC grid (numeric values)
-        roc_grid = period_df.pivot(index='EpisodeID', columns='TagName', values='mean_roc')
-        roc_grid.to_excel(output_dir / f'grid_roc_mean_{period}.xlsx')
-    
-    print(f"   Saved trend and ROC grids for both periods")
+    # Create pivot grid
+    pct_grid = pct_df.pivot(index='EpisodeID', columns='TagName', values='pct_change')
+    pct_grid.to_excel(output_dir / 'grid_pct_change_transition.xlsx')
+    print(f"   Saved percentage change grid")
     
     # Summary stats
     summary = {
         'total_episodes': len(episodes_df),
         'total_tags': len(pv_cols),
-        'transition_period': {
-            'most_volatile_tags': roc_df[roc_df['Period'] == 'transition'].groupby('TagName')['std_roc'].mean().nlargest(5).to_dict(),
-            'most_increasing_tags': roc_df[(roc_df['Period'] == 'transition') & (roc_df['trend_direction'] == 'increasing')].groupby('TagName').size().nlargest(5).to_dict()
-        },
-        'alarm_period': {
-            'most_volatile_tags': roc_df[roc_df['Period'] == 'alarm'].groupby('TagName')['std_roc'].mean().nlargest(5).to_dict()
-        }
+        'most_changed_tags': pct_df.groupby('TagName')['pct_change'].apply(
+            lambda x: np.nanmean(np.abs(x))
+        ).nlargest(5).to_dict()
     }
     
     if args.output_json:
-        with open(output_dir / 'roc_analysis_summary.json', 'w') as f:
+        with open(output_dir / 'pct_change_summary.json', 'w') as f:
             json.dump(summary, f, indent=2, default=str)
     
-    print(f"\n✅ Analysis complete!")
+    print(f"\\n✅ Analysis complete!")
     return summary
 
 

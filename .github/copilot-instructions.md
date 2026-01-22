@@ -409,7 +409,7 @@ python .skills/operator-action-learner/scripts/extract_action_sequences.py \
 # Build training features for ML
 python .skills/operator-action-learner/scripts/build_training_features.py \
     --start-date 2025-01-01 --end-date 2025-06-30 \
-    --output-file RESULTS/training_features_2025.csv
+    --output-file RESULTS/operator-action-learner/training_features_2025.csv
 ```
 
 ### 4. episode-analyzer
@@ -429,7 +429,7 @@ python .skills/episode-analyzer/scripts/analyze_episodes.py \
 # Generate episode visualizations (interactive HTML plots)
 python .skills/episode-analyzer/scripts/generate_episode_plots.py \
     --start-date 2025-01-01 --end-date 2025-06-30 \
-    --output-dir RESULTS/episode_plots
+    --output-dir RESULTS/episode-analyzer/episode_plots
 
 # Compute rate of change metrics only
 python .skills/episode-analyzer/scripts/compute_rate_of_change.py \
@@ -445,12 +445,12 @@ python .skills/episode-analyzer/scripts/analyze_operator_actions.py \
 ```
 
 Output files:
-- `RESULTS/episode_summary.xlsx`: Episode overview with durations
-- `RESULTS/episode_rate_of_change.xlsx`: ROC metrics per episode/tag
-- `RESULTS/episode_operating_limit_deviations.xlsx`: Limit deviation details
-- `RESULTS/episode_operator_actions.xlsx`: Action details per episode/tag
-- `RESULTS/grid_*.xlsx`: Episode vs tag grids for quick analysis
-- `RESULTS/episode_plots/*.html`: Interactive visualizations per episode
+- `RESULTS/episode-analyzer/episode_summary.xlsx`: Episode overview with durations
+- `RESULTS/episode-analyzer/episode_rate_of_change.xlsx`: ROC metrics per episode/tag
+- `RESULTS/episode-analyzer/episode_operating_limit_deviations.xlsx`: Limit deviation details
+- `RESULTS/episode-analyzer/episode_operator_actions.xlsx`: Action details per episode/tag
+- `RESULTS/episode-analyzer/grid_*.xlsx`: Episode vs tag grids for quick analysis
+- `RESULTS/episode-analyzer/episode_plots/*.html`: Interactive visualizations per episode
 
 All scripts support `--output-json` for machine-readable output.
 
@@ -479,10 +479,21 @@ ControlActions/
 │   ├── op_pv_data.parquet                       # PV/OP data (alternative)
 │   └── events_1071/                              # Event subfolders
 ├── RESULTS/
-│   ├── alarm_episode_tag_grid.xlsx              # Actions per alarm episode
-│   ├── ssd_alarm_episode_tag_grid.xlsx          # SSD per alarm episode
-│   ├── timeseries_profile.json                  # Time series data profile (Jan 2026)
-│   └── data_relationships.json                  # Tag mapping report (Jan 2026)
+│   ├── process-data-explorer/                   # Data profiling results
+│   │   ├── timeseries_profile.json              # Time series data profile
+│   │   └── data_relationships.json              # Tag mapping report
+│   ├── response-dynamics-estimator/             # Dynamics analysis results
+│   │   └── response_dynamics.json               # Response lag/time constants
+│   ├── episode-analyzer/                        # Episode analysis results
+│   │   ├── episode_summary.xlsx                 # Episode overview with durations
+│   │   ├── episode_rate_of_change.xlsx          # ROC metrics per episode/tag
+│   │   ├── episode_operating_limit_deviations.xlsx
+│   │   ├── episode_operator_actions.xlsx        # Action details per episode
+│   │   ├── grid_*.xlsx                          # Episode vs tag grids
+│   │   ├── episode_analysis_summary.json        # Summary statistics
+│   │   └── episode_plots/                       # Interactive visualizations
+│   └── operator-action-learner/                 # Action learning results
+│       └── training_features_*.csv              # ML training datasets
 ├── 1071_control_actions.ipynb                    # Main analysis notebook
 └── eda1.ipynb                                    # Exploratory analysis
 ```
@@ -509,4 +520,8 @@ ControlActions/
 - Consider edge cases: What if multiple alarms occur simultaneously?
 - The solution must be robust enough for production deployment eventually
 - **Use conda environment `adnoc`**: Activate with `conda activate adnoc` before running Python scripts
-- **Check RESULTS/ for existing analysis**: `timeseries_profile.json` and `data_relationships.json` contain detailed data profiles
+- **Check RESULTS/ for existing analysis**: Each skill saves results in its own subfolder:
+  - `RESULTS/process-data-explorer/` - Data profiles and relationships
+  - `RESULTS/response-dynamics-estimator/` - Response dynamics analysis
+  - `RESULTS/episode-analyzer/` - Episode analysis and visualizations
+  - `RESULTS/operator-action-learner/` - Training features and action patterns

@@ -539,7 +539,7 @@ def main():
                         help='Events CSV file')
     parser.add_argument('--trip-input', default='DATA/Final_List_Trip_Duration.csv',
                         help='Trip duration CSV file')
-    parser.add_argument('--output', '-o', default='RESULTS/response_dynamics.json',
+    parser.add_argument('--output', '-o', default='RESULTS/response-dynamics-estimator/response_dynamics.json',
                         help='Output JSON report path')
     parser.add_argument('--tag', '-t', default=None,
                         help='Analyze only this specific tag')
@@ -567,7 +567,7 @@ def main():
         ]
         compare_time_periods(
             args.ts_input, args.events_input, args.trip_input,
-            periods, 'RESULTS/response_dynamics_yearly_comparison.json'
+            periods, 'RESULTS/response-dynamics-estimator/response_dynamics_yearly_comparison.json'
         )
         return
     

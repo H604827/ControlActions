@@ -10,12 +10,12 @@ Usage:
         --events-file DATA/df_df_events_1071_export.csv \
         --ts-file DATA/03LIC_1071_JAN_2026.parquet \
         --target-tag 03LIC_1071 \
-        --output-file RESULTS/training_features.csv
+        --output-file RESULTS/operator-action-learner/training_features.csv
     
     # With trip filtering and date range:
     python build_training_features.py \
         --start-date 2025-01-01 --end-date 2025-06-30 \
-        --output-file RESULTS/training_features_2025.csv
+        --output-file RESULTS/operator-action-learner/training_features_2025.csv
 """
 
 import argparse

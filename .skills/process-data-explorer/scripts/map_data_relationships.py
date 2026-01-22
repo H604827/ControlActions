@@ -229,7 +229,7 @@ def main():
                         help='Path to events CSV file')
     parser.add_argument('--trip-file', default='DATA/Final_List_Trip_Duration.csv',
                         help='Path to trip duration CSV file')
-    parser.add_argument('--output', '-o', default='RESULTS/data_relationships.json',
+    parser.add_argument('--output', '-o', default='RESULTS/process-data-explorer/data_relationships.json',
                         help='Output JSON report path')
     parser.add_argument('--start-date', type=str, default=None,
                         help='Start date (YYYY-MM-DD)')

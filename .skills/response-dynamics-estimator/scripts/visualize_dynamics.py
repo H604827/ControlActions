@@ -158,7 +158,7 @@ def main():
                         help='Time series parquet file')
     parser.add_argument('--events-input', default='DATA/df_df_events_1071_export.csv',
                         help='Events CSV file')
-    parser.add_argument('--output-dir', '-o', default='RESULTS/dynamics_plots',
+    parser.add_argument('--output-dir', '-o', default='RESULTS/response-dynamics-estimator/dynamics_plots',
                         help='Output directory for plots')
     args = parser.parse_args()
     

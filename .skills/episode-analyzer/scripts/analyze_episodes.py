@@ -32,7 +32,7 @@ DEFAULT_TS_PATH = 'DATA/03LIC_1071_JAN_2026.parquet'
 DEFAULT_EVENTS_PATH = 'DATA/df_df_events_1071_export.csv'
 DEFAULT_LIMITS_PATH = 'DATA/operating_limits.csv'
 DEFAULT_TRIP_PATH = 'DATA/Final_List_Trip_Duration.csv'
-DEFAULT_OUTPUT_DIR = 'RESULTS'
+DEFAULT_OUTPUT_DIR = 'RESULTS/episode-analyzer'
 
 
 def parse_args():
@@ -108,66 +108,88 @@ def get_unique_episodes(ssd_df: pd.DataFrame) -> pd.DataFrame:
     return episodes
 
 
-def compute_rate_of_change(ts_df: pd.DataFrame, start_time: pd.Timestamp, 
-                           end_time: pd.Timestamp, tag_col: str) -> dict:
+def find_lowest_1071_timestamp(ts_df: pd.DataFrame, alarm_start: pd.Timestamp,
+                                alarm_end: pd.Timestamp) -> pd.Timestamp:
     """
-    Compute rate of change metrics for a tag within a time window.
+    Find the timestamp where 03LIC_1071.PV is at its lowest during alarm period.
+    
+    Args:
+        ts_df: Time series DataFrame with index as timestamp
+        alarm_start: Start of alarm period
+        alarm_end: End of alarm period
+    
+    Returns:
+        Timestamp of lowest 1071 PV value during alarm period
+    """
+    target_col = '03LIC_1071.PV'
+    if target_col not in ts_df.columns:
+        # Fallback to alarm_end if target tag not found
+        return alarm_end
+    
+    mask = (ts_df.index >= alarm_start) & (ts_df.index <= alarm_end)
+    alarm_window = ts_df.loc[mask, [target_col]].dropna()
+    
+    if len(alarm_window) == 0:
+        return alarm_end
+    
+    # Find timestamp of minimum value
+    min_idx = alarm_window[target_col].idxmin()
+    return min_idx
+
+
+def compute_percentage_change(ts_df: pd.DataFrame, start_time: pd.Timestamp, 
+                               end_time: pd.Timestamp, tag_col: str) -> dict:
+    """
+    Compute percentage change for a tag from start_time to end_time.
+    
+    ROC = (final_value - initial_value) / initial_value * 100
     
     Returns metrics dictionary.
     """
-    # Filter to time window
-    mask = (ts_df.index >= start_time) & (ts_df.index <= end_time)
-    window_df = ts_df.loc[mask, [tag_col]].dropna()
+    # Get value at start time (or closest after)
+    start_mask = (ts_df.index >= start_time)
+    start_window = ts_df.loc[start_mask, [tag_col]].dropna()
     
-    if len(window_df) < 2:
+    # Get value at end time (or closest before)
+    end_mask = (ts_df.index <= end_time)
+    end_window = ts_df.loc[end_mask, [tag_col]].dropna()
+    
+    if len(start_window) == 0 or len(end_window) == 0:
         return {
-            'mean_roc': np.nan,
-            'max_roc': np.nan,
-            'min_roc': np.nan,
-            'std_roc': np.nan,
-            'trend_direction': 'insufficient_data',
+            'pct_change': np.nan,
             'start_value': np.nan,
             'end_value': np.nan,
-            'total_change': np.nan,
-            'data_points': len(window_df)
+            'absolute_change': np.nan,
+            'start_time': str(start_time),
+            'end_time': str(end_time),
+            'data_available': False
         }
     
-    # Calculate rate of change (per minute)
-    values = window_df[tag_col].values
-    times_minutes = (window_df.index - window_df.index[0]).total_seconds() / 60
+    # Get first value after start_time
+    start_val = start_window[tag_col].iloc[0]
+    start_actual_time = start_window.index[0]
     
-    # Derivative (change per minute)
-    if len(times_minutes) > 1:
-        time_diff = np.diff(times_minutes)
-        value_diff = np.diff(values)
-        # Avoid division by zero
-        time_diff[time_diff == 0] = 1/60  # Assume 1 second minimum
-        roc = value_diff / time_diff
+    # Get last value before or at end_time
+    end_val = end_window[tag_col].iloc[-1]
+    end_actual_time = end_window.index[-1]
+    
+    # Calculate absolute change
+    absolute_change = end_val - start_val
+    
+    # Calculate percentage change relative to initial value
+    if start_val != 0:
+        pct_change = (absolute_change / abs(start_val)) * 100
     else:
-        roc = np.array([0])
-    
-    # Trend direction
-    start_val = values[0]
-    end_val = values[-1]
-    total_change = end_val - start_val
-    
-    if abs(total_change) < 0.01 * abs(start_val) if start_val != 0 else abs(total_change) < 0.01:
-        trend = 'stable'
-    elif total_change > 0:
-        trend = 'increasing'
-    else:
-        trend = 'decreasing'
+        pct_change = np.nan if absolute_change == 0 else np.inf * np.sign(absolute_change)
     
     return {
-        'mean_roc': float(np.nanmean(roc)),
-        'max_roc': float(np.nanmax(roc)),
-        'min_roc': float(np.nanmin(roc)),
-        'std_roc': float(np.nanstd(roc)),
-        'trend_direction': trend,
+        'pct_change': float(pct_change) if not np.isinf(pct_change) else None,
         'start_value': float(start_val),
         'end_value': float(end_val),
-        'total_change': float(total_change),
-        'data_points': len(window_df)
+        'absolute_change': float(absolute_change),
+        'start_time': str(start_actual_time),
+        'end_time': str(end_actual_time),
+        'data_available': True
     }
 
 
@@ -404,31 +426,27 @@ def run_episode_analysis(args):
         if idx % 50 == 0:
             print(f"   Processing episode {episode_id}/{len(episodes_df)}...")
         
+        # Find the timestamp where 03LIC_1071.PV is lowest during alarm period
+        # This will be the end point for ROC calculation for ALL tags
+        lowest_1071_time = find_lowest_1071_timestamp(ts_df, alarm_start, alarm_end)
+        
         # Analyze each tag
         for tag_col in pv_cols:
             tag_name = tag_col.replace('.PV', '')
             
-            # 1. Rate of change for transition period (transition_start to alarm_start)
-            roc_transition = compute_rate_of_change(
-                ts_df, transition_start, alarm_start, tag_col
+            # 1. Percentage change: from transition_start to lowest_1071_time
+            # The end time is determined by when 1071 reaches its lowest point
+            # but the values used for calculation are from this specific tag
+            roc_transition = compute_percentage_change(
+                ts_df, transition_start, lowest_1071_time, tag_col
             )
             roc_transition['EpisodeID'] = episode_id
             roc_transition['TagName'] = tag_col
-            roc_transition['Period'] = 'transition_to_alarm'
+            roc_transition['Period'] = 'transition_to_lowest'
             roc_transition['AlarmStart'] = str(alarm_start)
             roc_transition['AlarmEnd'] = str(alarm_end)
+            roc_transition['LowestPointTime'] = str(lowest_1071_time)
             roc_results.append(roc_transition)
-            
-            # 2. Rate of change for alarm period (alarm_start to alarm_end)
-            roc_alarm = compute_rate_of_change(
-                ts_df, alarm_start, alarm_end, tag_col
-            )
-            roc_alarm['EpisodeID'] = episode_id
-            roc_alarm['TagName'] = tag_col
-            roc_alarm['Period'] = 'alarm_period'
-            roc_alarm['AlarmStart'] = str(alarm_start)
-            roc_alarm['AlarmEnd'] = str(alarm_end)
-            roc_results.append(roc_alarm)
             
             # 3. Operating limit deviation (transition_start to alarm_start only)
             limit_dev = check_operating_limit_deviation(
@@ -477,13 +495,13 @@ def run_episode_analysis(args):
     # Create summary grids (episode x tag)
     print(f"\n📊 Creating summary grids...")
     
-    # ROC grid (transition period) - using mean_roc values
-    roc_transition = roc_df[roc_df['Period'] == 'transition_to_alarm']
+    # Percentage change grid (transition to lowest 1071 point)
+    roc_transition = roc_df[roc_df['Period'] == 'transition_to_lowest']
     roc_grid = roc_transition.pivot(
-        index='EpisodeID', columns='TagName', values='mean_roc'
+        index='EpisodeID', columns='TagName', values='pct_change'
     )
-    roc_grid.to_excel(output_dir / 'grid_roc_mean_transition.xlsx')
-    print(f"   ROC mean grid: {output_dir / 'grid_roc_mean_transition.xlsx'}")
+    roc_grid.to_excel(output_dir / 'grid_pct_change_transition.xlsx')
+    print(f"   Pct change grid: {output_dir / 'grid_pct_change_transition.xlsx'}")
     
     # Operating limit deviation grid
     limits_grid = limits_dev_df.pivot(
