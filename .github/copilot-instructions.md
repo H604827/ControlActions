@@ -412,6 +412,46 @@ python .skills/operator-action-learner/scripts/build_training_features.py \
     --output-file RESULTS/training_features_2025.csv
 ```
 
+### 4. episode-analyzer
+**Purpose**: Comprehensive episode-wise analysis for alarm episodes.
+**When to use**: Analyzing individual alarm episodes, computing per-episode metrics, generating visualizations.
+
+Metrics computed:
+- **Rate of change**: Mean, max, min, std of PV rate of change during transition and alarm periods
+- **Operating limit deviations**: Whether tags exceeded their operating limits during transition period
+- **Operator actions**: Number of OP/SP changes, direction (increase/decrease), magnitude statistics
+
+```bash
+# Run full episode analysis (all metrics)
+python .skills/episode-analyzer/scripts/analyze_episodes.py \
+    --start-date 2025-01-01 --end-date 2025-06-30 --output-json
+
+# Generate episode visualizations (interactive HTML plots)
+python .skills/episode-analyzer/scripts/generate_episode_plots.py \
+    --start-date 2025-01-01 --end-date 2025-06-30 \
+    --output-dir RESULTS/episode_plots
+
+# Compute rate of change metrics only
+python .skills/episode-analyzer/scripts/compute_rate_of_change.py \
+    --start-date 2025-01-01 --end-date 2025-06-30
+
+# Check operating limit deviations
+python .skills/episode-analyzer/scripts/check_operating_limits.py \
+    --start-date 2025-01-01 --end-date 2025-06-30
+
+# Analyze operator actions per episode
+python .skills/episode-analyzer/scripts/analyze_operator_actions.py \
+    --start-date 2025-01-01 --end-date 2025-06-30
+```
+
+Output files:
+- `RESULTS/episode_summary.xlsx`: Episode overview with durations
+- `RESULTS/episode_rate_of_change.xlsx`: ROC metrics per episode/tag
+- `RESULTS/episode_operating_limit_deviations.xlsx`: Limit deviation details
+- `RESULTS/episode_operator_actions.xlsx`: Action details per episode/tag
+- `RESULTS/grid_*.xlsx`: Episode vs tag grids for quick analysis
+- `RESULTS/episode_plots/*.html`: Interactive visualizations per episode
+
 All scripts support `--output-json` for machine-readable output.
 
 ---
@@ -426,9 +466,11 @@ ControlActions/
 │   ├── shared/                    # Shared preprocessing module (v2.0)
 │   ├── process-data-explorer/     # Data profiling skill
 │   ├── response-dynamics-estimator/ # Dynamics analysis skill
-│   └── operator-action-learner/   # Action learning skill
+│   ├── operator-action-learner/   # Action learning skill
+│   └── episode-analyzer/          # Episode-wise analysis skill
 ├── DATA/
 │   ├── 03LIC1071_PropaneLoop_0426.csv           # Related tags from KG (57 tags)
+│   ├── operating_limits.csv                     # Operating limits per tag (40 tags)
 │   ├── 03LIC_1071_JAN_2026.parquet              # PV/OP time series (1.7M rows)
 │   ├── df_df_events_1071_export.csv             # Events and actions (1.9M events)
 │   ├── Final_List_Trip_Duration.csv             # Trip/shutdown periods (107 trips)
