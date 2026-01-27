@@ -290,6 +290,113 @@ def check_operating_limit_deviation(ts_df: pd.DataFrame, start_time: pd.Timestam
     }
 
 
+def check_movement_towards_limits(ts_df: pd.DataFrame, transition_start: pd.Timestamp,
+                                   lowest_1071_time: pd.Timestamp, tag_col: str,
+                                   limits_df: pd.DataFrame) -> dict:
+    """
+    Check if a tag is moving towards or away from its operating limit band.
+    
+    Logic:
+    - If tag is within operating limits at transition_start: return 'within_limits'
+    - If tag is outside operating limits:
+      - Calculate initial PV value at transition_start
+      - Calculate final PV value at lowest_1071_time (when 03LIC_1071.PV is at minimum)
+      - Determine if the movement is towards or away from the operating limit band
+    
+    Returns:
+        dict with movement direction information
+    """
+    # Check if we have limits for this tag
+    if tag_col not in limits_df.index:
+        return {
+            'movement_direction': 'no_limits_defined',
+            'initial_value': np.nan,
+            'final_value': np.nan,
+            'lower_limit': np.nan,
+            'upper_limit': np.nan,
+            'initial_position': 'unknown',
+            'distance_change': np.nan,
+            'distance_to_band_initial': np.nan,
+            'distance_to_band_final': np.nan
+        }
+    
+    lower_limit = limits_df.loc[tag_col, 'LOWER_LIMIT']
+    upper_limit = limits_df.loc[tag_col, 'UPPER_LIMIT']
+    
+    # Get initial value at transition start
+    start_mask = (ts_df.index >= transition_start)
+    start_window = ts_df.loc[start_mask, [tag_col]].dropna()
+    
+    # Get final value at lowest_1071_time (or closest before)
+    end_mask = (ts_df.index <= lowest_1071_time)
+    end_window = ts_df.loc[end_mask, [tag_col]].dropna()
+    
+    if len(start_window) == 0 or len(end_window) == 0:
+        return {
+            'movement_direction': 'no_data',
+            'initial_value': np.nan,
+            'final_value': np.nan,
+            'lower_limit': float(lower_limit),
+            'upper_limit': float(upper_limit),
+            'initial_position': 'unknown',
+            'distance_change': np.nan,
+            'distance_to_band_initial': np.nan,
+            'distance_to_band_final': np.nan
+        }
+    
+    initial_value = start_window[tag_col].iloc[0]
+    final_value = end_window[tag_col].iloc[-1]
+    
+    # Determine initial position relative to limits
+    if initial_value < lower_limit:
+        initial_position = 'below_lower'
+        # Distance to band is distance to lower limit
+        distance_to_band_initial = lower_limit - initial_value
+        distance_to_band_final = lower_limit - final_value
+    elif initial_value > upper_limit:
+        initial_position = 'above_upper'
+        # Distance to band is distance to upper limit
+        distance_to_band_initial = initial_value - upper_limit
+        distance_to_band_final = final_value - upper_limit
+    else:
+        # Tag is within limits at transition start
+        return {
+            'movement_direction': 'within_limits',
+            'initial_value': float(initial_value),
+            'final_value': float(final_value),
+            'lower_limit': float(lower_limit),
+            'upper_limit': float(upper_limit),
+            'initial_position': 'within_limits',
+            'distance_change': 0.0,
+            'distance_to_band_initial': 0.0,
+            'distance_to_band_final': 0.0
+        }
+    
+    # Calculate change in distance to the band
+    # Positive means moving away from band, negative means moving towards
+    distance_change = distance_to_band_final - distance_to_band_initial
+    
+    # Determine movement direction
+    if distance_change < -0.001:  # Small tolerance for floating point
+        movement_direction = 'towards_limits'
+    elif distance_change > 0.001:
+        movement_direction = 'away_from_limits'
+    else:
+        movement_direction = 'stable'
+    
+    return {
+        'movement_direction': movement_direction,
+        'initial_value': float(initial_value),
+        'final_value': float(final_value),
+        'lower_limit': float(lower_limit),
+        'upper_limit': float(upper_limit),
+        'initial_position': initial_position,
+        'distance_change': float(distance_change),
+        'distance_to_band_initial': float(distance_to_band_initial),
+        'distance_to_band_final': float(distance_to_band_final)
+    }
+
+
 def analyze_operator_actions(events_df: pd.DataFrame, start_time: pd.Timestamp,
                              end_time: pd.Timestamp, tag_name: str) -> dict:
     """
@@ -414,6 +521,7 @@ def run_episode_analysis(args):
     roc_results = []
     limits_results = []
     actions_results = []
+    movement_results = []
     
     print(f"\n🔄 Analyzing {len(episodes_df)} episodes...")
     
@@ -467,11 +575,22 @@ def run_episode_analysis(args):
             actions['AlarmStart'] = str(alarm_start)
             actions['AlarmEnd'] = str(alarm_end)
             actions_results.append(actions)
+            
+            # 5. Movement towards/away from operating limits
+            movement = check_movement_towards_limits(
+                ts_df, transition_start, lowest_1071_time, tag_col, limits_df
+            )
+            movement['EpisodeID'] = episode_id
+            movement['TagName'] = tag_col
+            movement['TransitionStart'] = str(transition_start)
+            movement['LowestPointTime'] = str(lowest_1071_time)
+            movement_results.append(movement)
     
     # Convert to DataFrames
     roc_df = pd.DataFrame(roc_results)
     limits_dev_df = pd.DataFrame(limits_results)
     actions_df = pd.DataFrame(actions_results)
+    movement_df = pd.DataFrame(movement_results)
     
     # Save results
     print(f"\n💾 Saving results...")
@@ -491,6 +610,10 @@ def run_episode_analysis(args):
     # Save operator actions
     actions_df.to_excel(output_dir / 'episode_operator_actions.xlsx', index=False)
     print(f"   Operator actions: {output_dir / 'episode_operator_actions.xlsx'}")
+    
+    # Save movement towards/away from limits
+    movement_df.to_excel(output_dir / 'episode_movement_towards_limits.xlsx', index=False)
+    print(f"   Movement analysis: {output_dir / 'episode_movement_towards_limits.xlsx'}")
     
     # Create summary grids (episode x tag)
     print(f"\n📊 Creating summary grids...")
@@ -544,6 +667,14 @@ def run_episode_analysis(args):
     direction_grid.to_excel(output_dir / 'grid_action_directions.xlsx')
     print(f"   Direction grid: {output_dir / 'grid_action_directions.xlsx'}")
     
+    # Movement towards/away from limits grid
+    # Format: "towards", "away", "stable", "within_limits", or empty for no data
+    movement_grid = movement_df.pivot(
+        index='EpisodeID', columns='TagName', values='movement_direction'
+    )
+    movement_grid.to_excel(output_dir / 'grid_movement_towards_limits.xlsx')
+    print(f"   Movement grid: {output_dir / 'grid_movement_towards_limits.xlsx'}")
+    
     # Summary statistics
     summary = {
         'analysis_date': str(datetime.now()),
@@ -565,6 +696,13 @@ def run_episode_analysis(args):
         'operator_actions': {
             'total_actions': int(actions_df['total_changes'].sum()),
             'tags_with_most_actions': actions_df.groupby('TagName')['total_changes'].sum().nlargest(5).to_dict()
+        },
+        'movement_towards_limits': {
+            'tags_moving_towards': int((movement_df['movement_direction'] == 'towards_limits').sum()),
+            'tags_moving_away': int((movement_df['movement_direction'] == 'away_from_limits').sum()),
+            'tags_stable': int((movement_df['movement_direction'] == 'stable').sum()),
+            'tags_within_limits': int((movement_df['movement_direction'] == 'within_limits').sum()),
+            'tags_with_most_towards_movement': movement_df[movement_df['movement_direction'] == 'towards_limits'].groupby('TagName').size().nlargest(5).to_dict()
         }
     }
     
@@ -581,6 +719,8 @@ def run_episode_analysis(args):
     print(f"   Avg alarm duration: {summary['episode_stats']['mean_alarm_duration_min']:.1f} min")
     print(f"   Episodes with limit deviations: {summary['limit_deviations']['episodes_with_any_deviation']}")
     print(f"   Total operator actions: {summary['operator_actions']['total_actions']}")
+    print(f"   Tags moving towards limits: {summary['movement_towards_limits']['tags_moving_towards']}")
+    print(f"   Tags moving away from limits: {summary['movement_towards_limits']['tags_moving_away']}")
     
     return summary
 

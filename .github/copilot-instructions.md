@@ -449,7 +449,9 @@ Output files:
 - `RESULTS/episode-analyzer/episode_rate_of_change.xlsx`: ROC metrics per episode/tag
 - `RESULTS/episode-analyzer/episode_operating_limit_deviations.xlsx`: Limit deviation details
 - `RESULTS/episode-analyzer/episode_operator_actions.xlsx`: Action details per episode/tag
+- `RESULTS/episode-analyzer/episode_movement_towards_limits.xlsx`: Tag movement towards/away from operating limits
 - `RESULTS/episode-analyzer/grid_*.xlsx`: Episode vs tag grids for quick analysis
+- `RESULTS/episode-analyzer/grid_movement_towards_limits.xlsx`: Movement direction grid (towards/away/stable/within_limits)
 - `RESULTS/episode-analyzer/episode_plots/*.html`: Interactive visualizations per episode
 
 All scripts support `--output-json` for machine-readable output.
