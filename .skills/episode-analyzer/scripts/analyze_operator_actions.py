@@ -24,9 +24,14 @@ import numpy as np
 # Add shared module to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from shared.data_loader import load_all_data
+from shared.episode_utils import (
+    load_ssd_data,
+    load_ground_truth_with_fallback,
+    get_unique_episodes,
+    get_unique_tags_from_ssd
+)
 
 
-DEFAULT_SSD_PATH = 'DATA/SSD_1071_SSD_output_1071_7Jan2026.xlsx'
 DEFAULT_EVENTS_PATH = 'DATA/df_df_events_1071_export.csv'
 DEFAULT_OUTPUT_DIR = 'RESULTS'
 
@@ -36,46 +41,15 @@ def parse_args():
     parser.add_argument('--start-date', type=str, help='Start date (YYYY-MM-DD)')
     parser.add_argument('--end-date', type=str, help='End date (YYYY-MM-DD)')
     parser.add_argument('--no-trip-filter', action='store_true', help='Disable trip filtering')
-    parser.add_argument('--ssd-file', type=str, default=DEFAULT_SSD_PATH)
+    parser.add_argument('--ssd-file', type=str, default='DATA/SSD_1071_SSD_output_1071_7Jan2026.xlsx')
     parser.add_argument('--events-file', type=str, default=DEFAULT_EVENTS_PATH)
+    parser.add_argument('--ground-truth', type=str, default='DATA/Updated Ground truth -Adnoc RCA - recent(all_episode_top5_test_validated).csv',
+                        help='Path to ground truth CSV with AlarmStart_rounded column for episode filtering')
+    parser.add_argument('--no-ground-truth-filter', action='store_true',
+                        help='Disable filtering episodes to those in ground truth file')
     parser.add_argument('--output-dir', type=str, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument('--output-json', action='store_true')
     return parser.parse_args()
-
-
-def load_ssd_data(path: str, start_date: str = None, end_date: str = None) -> pd.DataFrame:
-    ssd_df = pd.read_excel(path)
-    for col in ['AlarmStart_rounded_minutes', 'AlarmEnd_rounded_minutes', 'Tag_First_Transition_Start_minutes']:
-        if col in ssd_df.columns:
-            ssd_df[col] = pd.to_datetime(ssd_df[col])
-    
-    if start_date:
-        ssd_df = ssd_df[ssd_df['AlarmStart_rounded_minutes'] >= pd.to_datetime(start_date)]
-    if end_date:
-        ssd_df = ssd_df[ssd_df['AlarmStart_rounded_minutes'] <= pd.to_datetime(end_date)]
-    
-    return ssd_df
-
-
-def get_unique_episodes(ssd_df: pd.DataFrame) -> pd.DataFrame:
-    episodes = ssd_df.groupby(['AlarmStart_rounded_minutes', 'AlarmEnd_rounded_minutes']).agg({
-        'Tag_First_Transition_Start_minutes': 'min'
-    }).reset_index()
-    episodes = episodes.rename(columns={'Tag_First_Transition_Start_minutes': 'EarliestTransitionStart'})
-    episodes = episodes.sort_values('AlarmStart_rounded_minutes').reset_index(drop=True)
-    episodes['EpisodeID'] = range(1, len(episodes) + 1)
-    return episodes
-
-
-def get_unique_tags_from_ssd(ssd_df: pd.DataFrame) -> list:
-    """Get unique tag base names from SSD data."""
-    tags = ssd_df['TagName'].unique()
-    # Extract base name (remove .PV, .OP suffixes)
-    base_tags = set()
-    for tag in tags:
-        base = tag.replace('.PV', '').replace('.OP', '')
-        base_tags.add(base)
-    return sorted(list(base_tags))
 
 
 def analyze_actions_for_tag(events_df: pd.DataFrame, start_time: pd.Timestamp,
@@ -212,7 +186,15 @@ def run_analysis(args):
     # Load data
     print("\n📁 Loading data...")
     ssd_df = load_ssd_data(args.ssd_file, args.start_date, args.end_date)
-    episodes_df = get_unique_episodes(ssd_df)
+    
+    # Load ground truth alarm starts for filtering (unless disabled)
+    ground_truth_alarm_starts = None
+    if not args.no_ground_truth_filter:
+        ground_truth_alarm_starts = load_ground_truth_with_fallback(args.ground_truth, verbose=True)
+    else:
+        print(f"   Ground truth filtering disabled")
+    
+    episodes_df = get_unique_episodes(ssd_df, ground_truth_alarm_starts)
     print(f"   Episodes: {len(episodes_df)}")
     
     # Get unique tags from SSD to analyze

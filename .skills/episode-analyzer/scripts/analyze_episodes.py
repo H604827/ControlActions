@@ -23,15 +23,20 @@ import numpy as np
 
 # Add shared module to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from shared.data_loader import load_all_data, load_trip_data, filter_trip_periods, DataFilterStats
+from shared.data_loader import load_all_data, DataFilterStats
+from shared.episode_utils import (
+    load_ssd_data,
+    load_operating_limits,
+    load_ground_truth_with_fallback,
+    get_unique_episodes,
+    find_lowest_1071_timestamp,
+    compute_percentage_change
+)
 
 
 # Default paths
-DEFAULT_SSD_PATH = 'DATA/SSD_1071_SSD_output_1071_7Jan2026.xlsx'
 DEFAULT_TS_PATH = 'DATA/03LIC_1071_JAN_2026.parquet'
 DEFAULT_EVENTS_PATH = 'DATA/df_df_events_1071_export.csv'
-DEFAULT_LIMITS_PATH = 'DATA/operating_limits.csv'
-DEFAULT_TRIP_PATH = 'DATA/Final_List_Trip_Duration.csv'
 DEFAULT_OUTPUT_DIR = 'RESULTS/episode-analyzer'
 
 
@@ -40,157 +45,17 @@ def parse_args():
     parser.add_argument('--start-date', type=str, help='Start date (YYYY-MM-DD)')
     parser.add_argument('--end-date', type=str, help='End date (YYYY-MM-DD)')
     parser.add_argument('--no-trip-filter', action='store_true', help='Disable trip period filtering')
-    parser.add_argument('--ssd-file', type=str, default=DEFAULT_SSD_PATH, help='Path to SSD file')
+    parser.add_argument('--ssd-file', type=str, default='DATA/SSD_1071_SSD_output_1071_7Jan2026.xlsx', help='Path to SSD file')
     parser.add_argument('--ts-file', type=str, default=DEFAULT_TS_PATH, help='Path to time series file')
     parser.add_argument('--events-file', type=str, default=DEFAULT_EVENTS_PATH, help='Path to events file')
-    parser.add_argument('--operating-limits', type=str, default=DEFAULT_LIMITS_PATH, help='Path to operating limits file')
+    parser.add_argument('--operating-limits', type=str, default='DATA/operating_limits.csv', help='Path to operating limits file')
+    parser.add_argument('--ground-truth', type=str, default='DATA/Updated Ground truth -Adnoc RCA - recent(all_episode_top5_test_validated).csv', 
+                        help='Path to ground truth CSV with AlarmStart_rounded column for episode filtering')
+    parser.add_argument('--no-ground-truth-filter', action='store_true', 
+                        help='Disable filtering episodes to those in ground truth file')
     parser.add_argument('--output-dir', type=str, default=DEFAULT_OUTPUT_DIR, help='Output directory')
     parser.add_argument('--output-json', action='store_true', help='Also output JSON format')
     return parser.parse_args()
-
-
-def load_ssd_data(ssd_path: str, start_date: str = None, end_date: str = None) -> pd.DataFrame:
-    """Load and preprocess SSD data."""
-    ssd_df = pd.read_excel(ssd_path)
-    
-    # Convert datetime columns
-    datetime_cols = ['AlarmStart_rounded_minutes', 'AlarmEnd_rounded_minutes', 
-                     'Tag_First_Transition_Start_minutes']
-    for col in datetime_cols:
-        if col in ssd_df.columns:
-            ssd_df[col] = pd.to_datetime(ssd_df[col])
-    
-    # Apply date filters
-    if start_date:
-        start_dt = pd.to_datetime(start_date)
-        ssd_df = ssd_df[ssd_df['AlarmStart_rounded_minutes'] >= start_dt]
-    
-    if end_date:
-        end_dt = pd.to_datetime(end_date)
-        ssd_df = ssd_df[ssd_df['AlarmStart_rounded_minutes'] <= end_dt]
-    
-    return ssd_df
-
-
-def load_operating_limits(limits_path: str) -> pd.DataFrame:
-    """Load operating limits data."""
-    limits_df = pd.read_csv(limits_path)
-    limits_df = limits_df.set_index('TAG_NAME')
-    return limits_df
-
-
-def get_unique_episodes(ssd_df: pd.DataFrame) -> pd.DataFrame:
-    """Extract unique alarm episodes from SSD data."""
-    # Group by alarm episode and get earliest transition start
-    episodes = ssd_df.groupby(['AlarmStart_rounded_minutes', 'AlarmEnd_rounded_minutes']).agg({
-        'Tag_First_Transition_Start_minutes': 'min'
-    }).reset_index()
-    
-    episodes = episodes.rename(columns={
-        'Tag_First_Transition_Start_minutes': 'EarliestTransitionStart'
-    })
-    
-    # Add episode ID
-    episodes = episodes.sort_values('AlarmStart_rounded_minutes').reset_index(drop=True)
-    episodes['EpisodeID'] = range(1, len(episodes) + 1)
-    
-    # Calculate durations
-    episodes['TransitionToAlarmMinutes'] = (
-        (episodes['AlarmStart_rounded_minutes'] - episodes['EarliestTransitionStart']).dt.total_seconds() / 60
-    )
-    episodes['AlarmDurationMinutes'] = (
-        (episodes['AlarmEnd_rounded_minutes'] - episodes['AlarmStart_rounded_minutes']).dt.total_seconds() / 60
-    )
-    episodes['TotalEpisodeDurationMinutes'] = (
-        (episodes['AlarmEnd_rounded_minutes'] - episodes['EarliestTransitionStart']).dt.total_seconds() / 60
-    )
-    
-    return episodes
-
-
-def find_lowest_1071_timestamp(ts_df: pd.DataFrame, alarm_start: pd.Timestamp,
-                                alarm_end: pd.Timestamp) -> pd.Timestamp:
-    """
-    Find the timestamp where 03LIC_1071.PV is at its lowest during alarm period.
-    
-    Args:
-        ts_df: Time series DataFrame with index as timestamp
-        alarm_start: Start of alarm period
-        alarm_end: End of alarm period
-    
-    Returns:
-        Timestamp of lowest 1071 PV value during alarm period
-    """
-    target_col = '03LIC_1071.PV'
-    if target_col not in ts_df.columns:
-        # Fallback to alarm_end if target tag not found
-        return alarm_end
-    
-    mask = (ts_df.index >= alarm_start) & (ts_df.index <= alarm_end)
-    alarm_window = ts_df.loc[mask, [target_col]].dropna()
-    
-    if len(alarm_window) == 0:
-        return alarm_end
-    
-    # Find timestamp of minimum value
-    min_idx = alarm_window[target_col].idxmin()
-    return min_idx
-
-
-def compute_percentage_change(ts_df: pd.DataFrame, start_time: pd.Timestamp, 
-                               end_time: pd.Timestamp, tag_col: str) -> dict:
-    """
-    Compute percentage change for a tag from start_time to end_time.
-    
-    ROC = (final_value - initial_value) / initial_value * 100
-    
-    Returns metrics dictionary.
-    """
-    # Get value at start time (or closest after)
-    start_mask = (ts_df.index >= start_time)
-    start_window = ts_df.loc[start_mask, [tag_col]].dropna()
-    
-    # Get value at end time (or closest before)
-    end_mask = (ts_df.index <= end_time)
-    end_window = ts_df.loc[end_mask, [tag_col]].dropna()
-    
-    if len(start_window) == 0 or len(end_window) == 0:
-        return {
-            'pct_change': np.nan,
-            'start_value': np.nan,
-            'end_value': np.nan,
-            'absolute_change': np.nan,
-            'start_time': str(start_time),
-            'end_time': str(end_time),
-            'data_available': False
-        }
-    
-    # Get first value after start_time
-    start_val = start_window[tag_col].iloc[0]
-    start_actual_time = start_window.index[0]
-    
-    # Get last value before or at end_time
-    end_val = end_window[tag_col].iloc[-1]
-    end_actual_time = end_window.index[-1]
-    
-    # Calculate absolute change
-    absolute_change = end_val - start_val
-    
-    # Calculate percentage change relative to initial value
-    if start_val != 0:
-        pct_change = (absolute_change / abs(start_val)) * 100
-    else:
-        pct_change = np.nan if absolute_change == 0 else np.inf * np.sign(absolute_change)
-    
-    return {
-        'pct_change': float(pct_change) if not np.isinf(pct_change) else None,
-        'start_value': float(start_val),
-        'end_value': float(end_val),
-        'absolute_change': float(absolute_change),
-        'start_time': str(start_actual_time),
-        'end_time': str(end_actual_time),
-        'data_available': True
-    }
 
 
 def check_operating_limit_deviation(ts_df: pd.DataFrame, start_time: pd.Timestamp,
@@ -495,8 +360,15 @@ def run_episode_analysis(args):
     ssd_df = load_ssd_data(args.ssd_file, args.start_date, args.end_date)
     print(f"   SSD episodes loaded: {len(ssd_df)} rows")
     
-    # Get unique episodes
-    episodes_df = get_unique_episodes(ssd_df)
+    # Load ground truth alarm starts for filtering (unless disabled)
+    ground_truth_alarm_starts = None
+    if not args.no_ground_truth_filter:
+        ground_truth_alarm_starts = load_ground_truth_with_fallback(args.ground_truth, verbose=True)
+    else:
+        print(f"   Ground truth filtering disabled")
+    
+    # Get unique episodes (filtered to ground truth if available)
+    episodes_df = get_unique_episodes(ssd_df, ground_truth_alarm_starts)
     print(f"   Unique episodes: {len(episodes_df)}")
     
     # Load time series and events using shared loader

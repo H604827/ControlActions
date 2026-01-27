@@ -76,10 +76,20 @@ All scripts support these common options:
 - `--start-date YYYY-MM-DD`: Filter data from this date
 - `--end-date YYYY-MM-DD`: Filter data until this date
 - `--no-trip-filter`: Disable trip period filtering
+- `--ground-truth PATH`: Path to ground truth CSV with AlarmStart_rounded column (default: DATA/Updated Ground truth -Adnoc RCA - recent(all_episode_top5_test_validated).csv)
+- `--no-ground-truth-filter`: Disable filtering episodes to those in ground truth file
 - `--output-dir PATH`: Directory for output files (default: RESULTS/)
 - `--output-json`: Also output results in JSON format
 - `--ssd-file PATH`: Path to SSD file (default: DATA/SSD_1071_SSD_output_1071_7Jan2026.xlsx)
 - `--operating-limits PATH`: Path to operating limits file (default: DATA/operating_limits.csv)
+
+### Ground Truth Filtering (Default Enabled)
+
+By default, all scripts now filter episodes to only those present in the ground truth CSV file. This ensures analysis is performed only on validated alarm episodes.
+
+- The ground truth CSV must have an `AlarmStart_rounded` column
+- Only episodes whose `AlarmStart_rounded_minutes` matches a value in the ground truth are analyzed
+- To disable this filtering and analyze all episodes, use `--no-ground-truth-filter`
 
 ## Data Sources
 
@@ -91,6 +101,7 @@ All scripts support these common options:
 | `DATA/df_df_events_1071_export.csv` | Events including CHANGE actions |
 | `DATA/operating_limits.csv` | Operating limits per tag |
 | `DATA/Final_List_Trip_Duration.csv` | Trip periods to exclude |
+| `DATA/Updated Ground truth -Adnoc RCA - recent(all_episode_top5_test_validated).csv` | Ground truth CSV for episode filtering (uses AlarmStart_rounded column) |
 
 ### Output Files
 | File | Description |

@@ -3,8 +3,9 @@ name: shared
 description: Shared utilities for all Control Actions skills. Provides consistent data loading with trip period filtering and date range support. All other skills should import from this module for preprocessing.
 metadata:
   author: control-actions-team
-  version: "1.0"
+  version: "2.0"
   created: "2026-01-20"
+  updated: "2026-01-27"
 ---
 
 # Shared Preprocessing Module
@@ -15,6 +16,7 @@ This module provides centralized data loading and preprocessing functions used b
 - **Trip period filtering**: Excludes data during plant trips/shutdowns
 - **Date range filtering**: Focus analysis on specific time periods
 - **Tag name utilities**: Handle naming variations between data sources
+- **Episode utilities**: Common functions for SSD, operating limits, and ground truth data
 
 ## Module Structure
 
@@ -23,6 +25,7 @@ This module provides centralized data loading and preprocessing functions used b
 ├── __init__.py          # Package initialization
 ├── data_loader.py       # Main data loading functions
 ├── tag_utils.py         # Tag name utilities
+├── episode_utils.py     # Episode analysis utilities (NEW)
 └── SKILL.md             # This documentation
 ```
 
@@ -38,6 +41,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from shared.data_loader import load_all_data, filter_trip_periods, DataFilterStats
 from shared.tag_utils import strings_similar, get_pv_op_pairs, categorize_tags
+from shared.episode_utils import (
+    load_ssd_data,
+    load_operating_limits,
+    load_ground_truth_with_fallback,
+    get_unique_episodes,
+    find_lowest_1071_timestamp,
+    compute_percentage_change
+)
 ```
 
 ### Load Data with Filtering
@@ -103,6 +114,65 @@ ts_df, _, stats = load_all_data(
 | `strings_similar()` | Check if two tag names are similar (handles variations) |
 | `get_pv_op_pairs()` | Find tags with both PV and OP columns |
 | `categorize_tags()` | Categorize columns into controllable/pv-only/op-only |
+
+### episode_utils.py
+
+| Function | Description |
+|----------|-------------|
+| `load_ssd_data()` | Load and preprocess SSD (Steady State Detection) data |
+| `load_operating_limits()` | Load operating limits CSV, indexed by TAG_NAME |
+| `load_ground_truth_alarm_starts()` | Load unique alarm start times from ground truth |
+| `load_ground_truth_with_fallback()` | Load ground truth with error handling |
+| `get_unique_episodes()` | Extract unique episodes from SSD with optional filtering |
+| `find_lowest_1071_timestamp()` | Find when target tag PV is at minimum during alarm |
+| `compute_percentage_change()` | Calculate percentage change for a tag in a time window |
+| `get_tags_in_episode()` | Get tags that transitioned during an episode |
+| `get_unique_tags_from_ssd()` | Get unique base tag names from SSD data |
+
+## Episode Utilities Usage
+
+### Load SSD Data
+
+```python
+from shared.episode_utils import load_ssd_data, get_unique_episodes
+
+# Load SSD data with date filtering
+ssd_df = load_ssd_data(
+    ssd_path='DATA/SSD_1071_SSD_output_1071_7Jan2026.xlsx',
+    start_date='2025-01-01',
+    end_date='2025-06-30'
+)
+
+# Extract unique episodes
+episodes_df = get_unique_episodes(ssd_df)
+```
+
+### Load with Ground Truth Filtering
+
+```python
+from shared.episode_utils import load_ground_truth_with_fallback, get_unique_episodes
+
+# Load ground truth (returns None if file not found)
+gt_alarm_starts = load_ground_truth_with_fallback(
+    'DATA/Updated Ground truth -Adnoc RCA - recent(all_episode_top5_test_validated).csv'
+)
+
+# Filter episodes to ground truth
+episodes_df = get_unique_episodes(ssd_df, ground_truth_alarm_starts=gt_alarm_starts)
+```
+
+### Compute Metrics
+
+```python
+from shared.episode_utils import find_lowest_1071_timestamp, compute_percentage_change
+
+# Find when target tag is at minimum
+lowest_time = find_lowest_1071_timestamp(ts_df, alarm_start, alarm_end)
+
+# Compute percentage change
+result = compute_percentage_change(ts_df, transition_start, lowest_time, 'TAG.PV')
+print(f"Change: {result['pct_change']:.2f}%")
+```
 
 ## DataFilterStats Class
 
