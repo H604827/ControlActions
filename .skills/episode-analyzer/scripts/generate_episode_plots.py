@@ -24,6 +24,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import yaml
 
 # Add shared module to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -36,15 +37,36 @@ from shared.episode_utils import (
     get_tags_in_episode
 )
 
+# Load global config
+CONFIG_PATH = Path(__file__).parent.parent.parent / 'config.yaml'
 
-# Default paths
-DEFAULT_TS_PATH = 'DATA/03LIC_1071_JAN_2026.parquet'
-DEFAULT_EVENTS_PATH = 'DATA/df_df_events_1071_export.csv'
-DEFAULT_OUTPUT_DIR = 'RESULTS/episode-analyzer/episode_plots'
+def load_config():
+    """Load global configuration from YAML file."""
+    if CONFIG_PATH.exists():
+        with open(CONFIG_PATH, 'r') as f:
+            return yaml.safe_load(f)
+    else:
+        # Return defaults if config doesn't exist
+        return {
+            'target': {'tag': '03LIC_1071', 'alarm_threshold': 28.75},
+            'operator_action_tags': [],
+            'visualization': {'context_minutes': 30, 'max_operator_action_tags': 20}
+        }
 
-# Target tag
-TARGET_TAG = '03LIC_1071'
-ALARM_THRESHOLD = 28.75
+CONFIG = load_config()
+
+
+# Default paths (from config or fallbacks)
+DEFAULT_TS_PATH = CONFIG.get('data_paths', {}).get('timeseries', 'DATA/03LIC_1071_JAN_2026.parquet')
+DEFAULT_EVENTS_PATH = CONFIG.get('data_paths', {}).get('events', 'DATA/df_df_events_1071_export.csv')
+DEFAULT_OUTPUT_DIR = CONFIG.get('output_paths', {}).get('episode_plots', 'RESULTS/episode-analyzer/episode_plots')
+
+# Target tag (from config)
+TARGET_TAG = CONFIG.get('target', {}).get('tag', '03LIC_1071')
+ALARM_THRESHOLD = CONFIG.get('target', {}).get('alarm_threshold', 28.75)
+
+# Operator action tags to filter (from config)
+OPERATOR_ACTION_TAGS = CONFIG.get('operator_action_tags', [])
 
 
 def parse_args():
@@ -98,22 +120,25 @@ def create_episode_plot(episode: pd.Series, ts_df: pd.DataFrame, events_df: pd.D
     # Get tags involved in this episode
     episode_tags = get_tags_in_episode(ssd_df, alarm_start, alarm_end)
     
-    # Create figure with secondary y-axis
+    # Create figure with secondary y-axis for OP values
     fig = make_subplots(
         rows=2, cols=1,
         row_heights=[0.7, 0.3],
         shared_xaxes=True,
         vertical_spacing=0.05,
+        specs=[[{"secondary_y": True}], [{"secondary_y": False}]],
         subplot_titles=(
             f'Episode {episode_id}: {alarm_start.strftime("%Y-%m-%d %H:%M")} - {alarm_end.strftime("%H:%M")}',
             'Operator Actions'
         )
     )
     
-    # --- Top panel: PV values ---
+    # --- Top panel: PV and OP values ---
     
     # Add target tag PV (primary trace)
     target_pv = f'{TARGET_TAG}.PV'
+    target_op = f'{TARGET_TAG}.OP'
+    
     if target_pv in ts_plot.columns:
         fig.add_trace(
             go.Scatter(
@@ -123,13 +148,28 @@ def create_episode_plot(episode: pd.Series, ts_df: pd.DataFrame, events_df: pd.D
                 name=f'{TARGET_TAG}.PV (Target)',
                 line=dict(color='blue', width=2)
             ),
-            row=1, col=1
+            row=1, col=1, secondary_y=False
         )
     
-    # Add other PV traces (hidden by default)
-    colors = ['green', 'orange', 'purple', 'brown', 'pink', 'gray', 'olive', 'cyan']
+    # Add target tag OP on secondary y-axis
+    if target_op in ts_plot.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=ts_plot.index,
+                y=ts_plot[target_op],
+                mode='lines',
+                name=f'{TARGET_TAG}.OP (Target)',
+                line=dict(color='blue', width=2, dash='dash')
+            ),
+            row=1, col=1, secondary_y=True
+        )
+    
+    # Color palette for PV and OP traces
+    pv_colors = ['green', 'orange', 'purple', 'brown', 'pink', 'gray', 'olive', 'cyan']
+    op_colors = ['darkgreen', 'darkorange', 'darkviolet', 'saddlebrown', 'hotpink', 'dimgray', 'darkolivegreen', 'darkcyan']
     color_idx = 0
     
+    # Add other PV traces (hidden by default)
     pv_cols = [col for col in ts_plot.columns if col.endswith('.PV') and col != target_pv]
     for pv_col in pv_cols:
         # Highlight tags that were in the episode
@@ -142,13 +182,35 @@ def create_episode_plot(episode: pd.Series, ts_df: pd.DataFrame, events_df: pd.D
                 mode='lines',
                 name=pv_col + (' (deviated)' if is_episode_tag else ''),
                 line=dict(
-                    color=colors[color_idx % len(colors)],
+                    color=pv_colors[color_idx % len(pv_colors)],
                     width=2 if is_episode_tag else 1
                 ),
-                visible='legendonly' if not is_episode_tag else True
+                visible='legendonly' if not is_episode_tag else True,
+                legendgroup=pv_col.replace('.PV', '')
             ),
-            row=1, col=1
+            row=1, col=1, secondary_y=False
         )
+        
+        # Add corresponding OP trace if available
+        op_col = pv_col.replace('.PV', '.OP')
+        if op_col in ts_plot.columns:
+            fig.add_trace(
+                go.Scatter(
+                    x=ts_plot.index,
+                    y=ts_plot[op_col],
+                    mode='lines',
+                    name=op_col + (' (deviated)' if is_episode_tag else ''),
+                    line=dict(
+                        color=op_colors[color_idx % len(op_colors)],
+                        width=2 if is_episode_tag else 1,
+                        dash='dash'
+                    ),
+                    visible='legendonly' if not is_episode_tag else True,
+                    legendgroup=pv_col.replace('.PV', '')
+                ),
+                row=1, col=1, secondary_y=True
+            )
+        
         color_idx += 1
     
     # Add alarm threshold line
@@ -193,11 +255,21 @@ def create_episode_plot(episode: pd.Series, ts_df: pd.DataFrame, events_df: pd.D
     
     # --- Bottom panel: Operator actions timeline ---
     
+    # Filter events to only configured operator action tags (if specified)
+    if OPERATOR_ACTION_TAGS:
+        events_filtered = events_plot[events_plot['Source'].isin(OPERATOR_ACTION_TAGS)]
+    else:
+        events_filtered = events_plot
+    
     # Get unique sources for y-axis positioning
-    unique_sources = events_plot['Source'].unique()
+    max_tags = CONFIG.get('visualization', {}).get('max_operator_action_tags', 20)
+    unique_sources = events_filtered['Source'].unique()[:max_tags]
     source_to_y = {s: i for i, s in enumerate(unique_sources)}
     
-    if len(events_plot) > 0:
+    if len(events_filtered) > 0:
+        # Filter to only sources that will be displayed
+        events_to_plot = events_filtered[events_filtered['Source'].isin(unique_sources)]
+        
         # Determine marker colors based on direction of change
         def get_marker_color(v, p):
             try:
@@ -208,14 +280,14 @@ def create_episode_plot(episode: pd.Series, ts_df: pd.DataFrame, events_df: pd.D
                 return 'blue'  # Non-numeric changes
         
         marker_colors = [get_marker_color(v, p) 
-                        for v, p in zip(events_plot['Value'].fillna(0), 
-                                       events_plot['PrevValue'].fillna(0))]
+                        for v, p in zip(events_to_plot['Value'].fillna(0), 
+                                       events_to_plot['PrevValue'].fillna(0))]
         
         # Add markers for each action
         fig.add_trace(
             go.Scatter(
-                x=events_plot['VT_Start'],
-                y=[source_to_y.get(s, 0) for s in events_plot['Source']],
+                x=events_to_plot['VT_Start'],
+                y=[source_to_y.get(s, 0) for s in events_to_plot['Source']],
                 mode='markers',
                 name='Operator Actions',
                 marker=dict(
@@ -223,7 +295,7 @@ def create_episode_plot(episode: pd.Series, ts_df: pd.DataFrame, events_df: pd.D
                     color=marker_colors,
                     symbol='diamond'
                 ),
-                customdata=events_plot[['Source', 'Description', 'Value', 'PrevValue']].values,
+                customdata=events_to_plot[['Source', 'Description', 'Value', 'PrevValue']].values,
                 hovertemplate=(
                     '<b>Time:</b> %{x}<br>' +
                     '<b>Source:</b> %{customdata[0]}<br>' +
@@ -264,7 +336,8 @@ def create_episode_plot(episode: pd.Series, ts_df: pd.DataFrame, events_df: pd.D
     
     # Update axes
     fig.update_xaxes(title_text='Time', row=2, col=1)
-    fig.update_yaxes(title_text='PV Value', row=1, col=1)
+    fig.update_yaxes(title_text='PV Value', row=1, col=1, secondary_y=False)
+    fig.update_yaxes(title_text='OP Value (%)', row=1, col=1, secondary_y=True)
     fig.update_yaxes(
         title_text='Tag',
         ticktext=list(unique_sources)[:20] if len(unique_sources) > 0 else [''],

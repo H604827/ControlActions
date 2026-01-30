@@ -1,0 +1,70 @@
+# Global Configuration for Control Actions Project
+# ================================================
+# This file contains configurable parameters used across all skills.
+
+# Target tag configuration
+target:
+  tag: "03LIC_1071"
+  alarm_threshold: 28.75
+  alarm_type: "PVLO"
+
+# Tags to display in operator actions panel
+# These tags will be filtered from the events data using the 'Source' column
+# Add or remove tags as needed for your analysis
+operator_action_tags:
+  # Target tag and related level controllers
+  - "03LIC_1071"
+  - "03LIC_1016"
+  - "03LIC_1085"
+  - "03LIC_1094"
+  - "03LIC_1097"
+  
+  # Pressure controllers (highly operated)
+  - "03PIC_1013"
+  - "03PIC_1068"
+  - "03PIC_1104"
+  
+  # Flow controllers
+  - "03FIC_1085"
+  - "03FIC_3415"
+  
+  # Temperature controllers
+  - "03TIC_1092"
+  - "03TIC_1142"
+  - "03TIC_1145"
+
+# Visualization settings
+visualization:
+  context_minutes: 30  # Minutes before/after episode to show
+  max_operator_action_tags: 20  # Maximum tags to show on y-axis
+  
+  # Color settings
+  colors:
+    target_pv: "blue"
+    target_op: "blue"
+    alarm_threshold: "red"
+    transition_period: "yellow"
+    alarm_period: "red"
+    
+  # Line styles
+  pv_line_width: 2
+  op_line_width: 2
+  op_line_dash: "dash"
+
+# Data file paths (relative to project root)
+data_paths:
+  timeseries: "DATA/03LIC_1071_JAN_2026.parquet"
+  events: "DATA/df_df_events_1071_export.csv"
+  ssd: "DATA/SSD_1071_SSD_output_1071_7Jan2026.xlsx"
+  operating_limits: "DATA/operating_limits.csv"
+  ground_truth: "DATA/Updated Ground truth -Adnoc RCA - recent(all_episode_top5_test_validated).csv"
+  trip_durations: "DATA/Final_List_Trip_Duration.csv"
+  knowledge_graph_tags: "DATA/03LIC1071_PropaneLoop_0426.csv"
+
+# Output paths
+output_paths:
+  episode_plots: "RESULTS/episode-analyzer/episode_plots"
+  episode_analysis: "RESULTS/episode-analyzer"
+  data_profiling: "RESULTS/process-data-explorer"
+  response_dynamics: "RESULTS/response-dynamics-estimator"
+  operator_learning: "RESULTS/operator-action-learner"
