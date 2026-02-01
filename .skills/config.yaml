@@ -61,6 +61,20 @@ data_paths:
   trip_durations: "DATA/Final_List_Trip_Duration.csv"
   knowledge_graph_tags: "DATA/03LIC1071_PropaneLoop_0426.csv"
 
+# Operator action window analysis settings
+operator_action_windows:
+  # Tags to analyze for operator actions
+  target_action_tags:
+    - "03LIC_1071"
+    - "03LIC_1016"
+    - "03PIC_1013"
+  
+  # Window sizes in minutes (windows are BEFORE the action time)
+  window_sizes:
+    LT: 30   # Long Term: 30 minutes
+    MT: 10   # Medium Term: 10 minutes
+    ST: 3    # Short Term: 3 minutes
+
 # Output paths
 output_paths:
   episode_plots: "RESULTS/episode-analyzer/episode_plots"
