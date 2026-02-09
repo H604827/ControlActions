@@ -35,8 +35,11 @@ operator_action_tags:
 
 # Visualization settings
 visualization:
+  # Operator action tags to display in the bottom panel
+  # Options: "list" (use operator_action_tags) or "all" (show all actions)
+  operator_action_mode: "all"
   context_minutes: 30  # Minutes before/after episode to show
-  max_operator_action_tags: 20  # Maximum tags to show on y-axis
+  max_operator_action_tags: 200  # Maximum tags to show on y-axis
   
   # Color settings
   colors:

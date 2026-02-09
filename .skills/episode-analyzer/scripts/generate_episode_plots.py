@@ -66,7 +66,11 @@ TARGET_TAG = CONFIG.get('target', {}).get('tag', '03LIC_1071')
 ALARM_THRESHOLD = CONFIG.get('target', {}).get('alarm_threshold', 28.75)
 
 # Operator action tags to filter (from config)
-OPERATOR_ACTION_TAGS = CONFIG.get('operator_action_tags', [])
+_action_mode = CONFIG.get('visualization', {}).get('operator_action_mode', 'list')
+if _action_mode == 'all':
+    OPERATOR_ACTION_TAGS = []
+else:
+    OPERATOR_ACTION_TAGS = CONFIG.get('operator_action_tags', [])
 
 
 def parse_args():
@@ -106,13 +110,18 @@ def create_episode_plot(episode: pd.Series, ts_df: pd.DataFrame, events_df: pd.D
     plot_start = transition_start - timedelta(minutes=context_minutes)
     plot_end = alarm_end + timedelta(minutes=context_minutes)
     
+    # Define operator action window (transition start to alarm end + 60 mins)
+    # Use episode window_start/window_end if present, otherwise fall back to the rule above.
+    action_window_start = episode.get('window_start', transition_start)
+    action_window_end = episode.get('window_end', alarm_end + timedelta(minutes=60))
+    
     # Filter data for plot range
     ts_mask = (ts_df.index >= plot_start) & (ts_df.index <= plot_end)
     ts_plot = ts_df[ts_mask]
     
     events_mask = (
-        (events_df['VT_Start'] >= plot_start) & 
-        (events_df['VT_Start'] <= plot_end) &
+        (events_df['VT_Start'] >= action_window_start) & 
+        (events_df['VT_Start'] <= action_window_end) &
         (events_df['ConditionName'] == 'CHANGE')
     )
     events_plot = events_df[events_mask]
