@@ -88,7 +88,7 @@ op_pv_data_df.sort_index(inplace=True)
 ```
 
 ### 2. Events/Actions Data
-- **Location**: `DATA/df_df_events_1071_export.csv`
+- **Location**: `DATA/trip_filtered_events.csv`
 - **Content**: Operator actions and alarm events
 - **Key Columns**:
   - `Source`: Tag name (e.g., '03LIC_1071')
@@ -100,7 +100,7 @@ op_pv_data_df.sort_index(inplace=True)
   - `Category`: Event category (use Category=1 for filtering)
 - **Loading Pattern**:
 ```python
-combined_pv_events_df = pd.read_csv("DATA/df_df_events_1071_export.csv", low_memory=False)
+combined_pv_events_df = pd.read_csv("DATA/trip_filtered_events.csv", low_memory=False)
 combined_pv_events_df['VT_Start'] = pd.to_datetime(combined_pv_events_df['VT_Start'])
 combined_pv_events_df = combined_pv_events_df.sort_values('VT_Start')
 ```
