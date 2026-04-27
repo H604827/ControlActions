@@ -28,18 +28,6 @@ Build an automated system that:
 - **Alarm Threshold**: 28.75 (low limit)
 - **Priority**: Low
 
-### Target Tag Statistics (Verified Jan 2026)
-| Metric | PV (Level) | OP (Output) |
-|--------|------------|-------------|
-| **Mean** | 38.98 | 51.05 |
-| **Std Dev** | 4.76 | 5.61 |
-| **Min** | -1.34 | -6.88 |
-| **Max** | 105.52 | 85.00 |
-| **Q25/Q50/Q75** | 35.48/38.96/41.80 | - |
-| **IQR** | 6.32 | - |
-
-**Note**: Mean PV (38.98) is well above alarm threshold (28.75). Q25 is 35.48, meaning 75% of readings are above this value.
-
 ### Process Response Dynamics (Key Research Area)
 - **Critical Question**: For each PV/OP tag pair, how long does it take for an OP change to affect the PV?
 - **Observation**: From sample data, PV responds to OP changes relatively quickly (within minutes), but this needs to be systematically quantified
@@ -123,6 +111,26 @@ combined_pv_events_df = combined_pv_events_df.sort_values('VT_Start')
 - **Location**: `RESULTS/`
 - `alarm_episode_tag_grid.xlsx`: Which tags had CHANGE events during each alarm episode
 - `ssd_alarm_episode_tag_grid.xlsx`: Which tags were out of steady state during each alarm episode
+
+### 6. Consolidated Alarm, Control Action, and Plant Context Workbook
+- **Location**: `DATA/1071_pvlo_alarms_clustered_with_control_actions_with_plant_context.xlsx`
+- **Purpose**: Single-source workbook for joined analysis of alarm windows, control actions, and plant state.
+- **Relationship to original workbook**: This workbook is derived from `DATA/1071_pvlo_alarms_clustered_with_control_actions.xlsx` and preserves the original workbook structure while enriching the analysis sheets.
+- **Sheets**:
+    - `alarm_clusters`: Alarm episode and cluster-level details
+    - `control_actions`: Original control action rows plus enriched action-level and plant-context features
+    - `overlapping_alarms`: Preserved original sheet for overlap/reference analysis
+- **Key enriched columns in `control_actions`**:
+    - Raw action field: `Step`
+    - Same-minute merged action fields: `merged_group_id`, `merged_group_role`, `merged_action_timestamp`, `merged_action_timing`, `merged_prev_value`, `merged_value`, `merged_step`, `merged_action_direction`, `merged_num_actions`
+    - SSD-linked timing fields: `deviation_start`, `merged_minutes_from_deviation`
+    - Plant state/context fields: columns prefixed with `merged_ctx_` such as normalized PV positions, episode movement since deviation start, short-window deltas, target PV at action, and alarm proximity
+- **How to use it**:
+    - Prefer this workbook when an analysis needs alarm details, operator action details, and plant state together in one source.
+    - Use `cluster_id` to connect cluster-level alarm context with row-level control actions.
+    - Use the `control_actions` sheet for action sequencing, merged same-minute action analysis, action magnitude/direction analysis, and ML feature extraction.
+    - Use the `merged_ctx_` columns as ready-made plant-state features instead of recomputing snapshots from parquet unless a new feature is explicitly required.
+    - If an analysis depends on SSD-backed deviation timing, filter or flag rows where `deviation_start` is blank. The workbook intentionally keeps unmatched alarms, but those rows do not have SSD timing.
 
 ---
 
@@ -474,6 +482,8 @@ ControlActions/
 │   ├── 03LIC1071_PropaneLoop_0426.csv           # Related tags from KG (57 tags)
 │   ├── operating_limits.csv                     # Operating limits per tag (40 tags)
 │   ├── 03LIC_1071_JAN_2026.parquet              # PV/OP time series (1.7M rows)
+│   ├── 1071_pvlo_alarms_clustered_with_control_actions.xlsx  # Original workbook with clustered alarms and control actions
+│   ├── 1071_pvlo_alarms_clustered_with_control_actions_with_plant_context.xlsx  # Consolidated single-source workbook with original sheets plus enriched control_actions plant context
 │   ├── df_df_events_1071_export.csv             # Events and actions (1.9M events)
 │   ├── Final_List_Trip_Duration.csv             # Trip/shutdown periods (107 trips)
 │   ├── SSD_1071_SSD_output_1071_7Jan2026.xlsx   # Steady state detection
@@ -522,6 +532,8 @@ ControlActions/
 - Consider edge cases: What if multiple alarms occur simultaneously?
 - The solution must be robust enough for production deployment eventually
 - **Use conda environment `adnoc`**: Activate with `conda activate adnoc` before running Python scripts
+- **Prefer the consolidated workbook for joined analyses**: `DATA/1071_pvlo_alarms_clustered_with_control_actions_with_plant_context.xlsx` is the default single-source dataset when alarm details, control action details, and plant state are needed together.
+- **Preserve original workbook sheets in derived exports**: When updating or regenerating the consolidated workbook, keep untouched original sheets such as `overlapping_alarms` and replace only the enriched analysis sheets.
 - **Check RESULTS/ for existing analysis**: Each skill saves results in its own subfolder:
   - `RESULTS/process-data-explorer/` - Data profiles and relationships
   - `RESULTS/response-dynamics-estimator/` - Response dynamics analysis
