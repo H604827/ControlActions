@@ -4,7 +4,12 @@
 
 This page documents the consolidated workbook:
 
-`DATA/1071_pvlo_alarms_clustered_with_control_actions_with_plant_context.xlsx`
+[1071_pvlo_alarms_clustered_with_control_actions_with_plant_context.xlsx](https://honeywellprod-my.sharepoint.com/:x:/g/personal/masum_saikia_honeywell_com/IQCmByP5icNiSKEMruJ0duUrASGJG5f1HydpGsBbtcDIW_w?e=fFkbFU)
+
+Useful links:
+
+- [Excel workbook](https://honeywellprod-my.sharepoint.com/:x:/g/personal/masum_saikia_honeywell_com/IQCmByP5icNiSKEMruJ0duUrASGJG5f1HydpGsBbtcDIW_w?e=fFkbFU)
+- [Generation notebook](https://github.com/H604827/ControlActions/blob/main/EXPERIMENTS/control_actions_context.ipynb)
 
 The workbook is the single source for reviewing:
 
@@ -22,7 +27,7 @@ The workbook contains three sheets:
 
 The common key across sheets is `cluster_id`.
 
-## Start Here: Sheet 2 `control_actions`
+## Sheet 2 `control_actions`
 
 If the objective is to review ROC, PV, and SP/OP change mapping, this is the main sheet to start with.
 
@@ -99,21 +104,23 @@ These fields make it possible to see, for each action:
 
 The plant context is defined around the merged action timestamp rather than only around the raw action row timestamp. This provides one consistent context snapshot for each same-minute action group.
 
+For reliable rendering in Confluence and markdown viewers, the formulas below are written in plain-text notation.
+
 ### Time definitions
 
 Let:
 
-- $t_a$ = merged action timestamp, i.e. the earliest original `VT_Start` inside the merged same-minute action group
-- $t_d$ = deviation start timestamp from SSD
-- $t_{a-3}$ = $t_a - 3$ minutes
-- $t_{a-5}$ = $t_a - 5$ minutes
+- `t_a` = merged action timestamp, i.e. the earliest original `VT_Start` inside the merged same-minute action group
+- `t_d` = deviation start timestamp from SSD
+- `t_a_minus_3` = `t_a - 3 minutes`
+- `t_a_minus_5` = `t_a - 5 minutes`
 
-For any PV tag $x$:
+For any PV tag `x`:
 
-- $PV_x(t)$ = historian PV value for tag $x$ at time $t$, using as-of lookup
-- $LL_x$ = lower operating limit for tag $x$
-- $UL_x$ = upper operating limit for tag $x$
-- $Range_x = UL_x - LL_x$
+- `PV_x(t)` = historian PV value for tag `x` at time `t`, using as-of lookup
+- `LL_x` = lower operating limit for tag `x`
+- `UL_x` = upper operating limit for tag `x`
+- `Range_x = UL_x - LL_x`
 
 The historian lookup uses an as-of snapshot:
 
@@ -124,9 +131,7 @@ The historian lookup uses an as-of snapshot:
 
 For the original action row:
 
-$$
-Step = Value - PrevValue
-$$
+`Step = Value - PrevValue`
 
 ### 2. Same-minute action merge logic
 
@@ -139,15 +144,11 @@ Rows are grouped using:
 
 where:
 
-$$
-minute\_bucket = \lfloor VT\_Start \rfloor_{minute}
-$$
+`minute_bucket = floor_to_minute(VT_Start)`
 
 For each merged group:
 
-$$
-merged\_step = merged\_value - merged\_prev\_value
-$$
+`merged_step = merged_value - merged_prev_value`
 
 where:
 
@@ -163,37 +164,27 @@ Each alarm cluster is matched to SSD using normalized start and end times.
 
 The control cluster timestamps are normalized as:
 
-$$
-cluster\_start\_floor = floor\_to\_minute(round\_to\_second(cluster\_start))
-$$
+`cluster_start_floor = floor_to_minute(round_to_second(cluster_start))`
 
-$$
-cluster\_end\_floor = floor\_to\_minute(round\_to\_second(cluster\_end))
-$$
+`cluster_end_floor = floor_to_minute(round_to_second(cluster_end))`
 
 If a cluster matches an SSD window, then:
 
-$$
-merged\_minutes\_from\_deviation = \frac{t_a - t_d}{60\ seconds}
-$$
+`merged_minutes_from_deviation = (t_a - t_d) / 60 seconds`
 
 ### 4. PV at action time
 
 For the target tag:
 
-$$
-merged\_ctx\_03LIC\_1071\_pv\_at\_action = PV_{03LIC\_1071}(t_a)
-$$
+`merged_ctx_03LIC_1071_pv_at_action = PV_03LIC_1071(t_a)`
 
 This is the direct PV value when the merged action starts.
 
 ### 5. Normalized PV position within operating range
 
-For any valid PV tag $x$:
+For any valid PV tag `x`:
 
-$$
-merged\_ctx\_{x}\_norm\_pos = \frac{PV_x(t_a) - LL_x}{Range_x}
-$$
+`merged_ctx_{x}_norm_pos = (PV_x(t_a) - LL_x) / Range_x`
 
 Interpretation:
 
@@ -202,11 +193,9 @@ Interpretation:
 
 ### 6. Episode-level ROC-style movement from deviation start to action
 
-For any valid PV tag $x$:
+For any valid PV tag `x`:
 
-$$
-merged\_ctx\_{x}\_episode\_norm\_roc = \frac{PV_x(t_a) - PV_x(t_d)}{Range_x}
-$$
+`merged_ctx_{x}_episode_norm_roc = (PV_x(t_a) - PV_x(t_d)) / Range_x`
 
 This is the workbook's main episode-level ROC-style feature. It is a normalized change from deviation start to action time.
 
@@ -217,31 +206,25 @@ Important note:
 
 ### 7. Local 3-minute ROC-style movement before action
 
-For any valid PV tag $x$:
+For any valid PV tag `x`:
 
-$$
-merged\_ctx\_{x}\_local\_3m\_delta\_norm = \frac{PV_x(t_a) - PV_x(t_{a-3})}{Range_x}
-$$
+`merged_ctx_{x}_local_3m_delta_norm = (PV_x(t_a) - PV_x(t_a_minus_3)) / Range_x`
 
 This captures short-window movement immediately before the action.
 
 ### 8. Local 5-minute ROC-style movement before action
 
-For any valid PV tag $x$:
+For any valid PV tag `x`:
 
-$$
-merged\_ctx\_{x}\_local\_5m\_delta\_norm = \frac{PV_x(t_a) - PV_x(t_{a-5})}{Range_x}
-$$
+`merged_ctx_{x}_local_5m_delta_norm = (PV_x(t_a) - PV_x(t_a_minus_5)) / Range_x`
 
 This captures a slightly broader short-window movement immediately before the action.
 
 ### 9. Alarm proximity for the target tag
 
-Let $Threshold = 28.75$ for `03LIC_1071.PV`.
+Let `Threshold = 28.75` for `03LIC_1071.PV`.
 
-$$
-merged\_ctx\_alarm\_proximity = \frac{PV_{03LIC\_1071}(t_a) - Threshold}{UL_{03LIC\_1071} - Threshold}
-$$
+`merged_ctx_alarm_proximity = (PV_03LIC_1071(t_a) - Threshold) / (UL_03LIC_1071 - Threshold)`
 
 Interpretation:
 
@@ -251,11 +234,9 @@ Interpretation:
 
 ### 10. Time progress ratio within the cluster lifecycle
 
-Let $MedianClusterDuration$ be the median duration across clusters.
+Let `MedianClusterDuration` be the median duration across clusters.
 
-$$
-merged\_ctx\_time\_progress\_ratio = \frac{merged\_minutes\_from\_deviation}{MedianClusterDuration}
-$$
+`merged_ctx_time_progress_ratio = merged_minutes_from_deviation / MedianClusterDuration`
 
 Interpretation:
 
@@ -394,41 +375,11 @@ Use this sheet when the question is:
 - how large the concurrent alarm context was
 - which filtered tags and operated tags were relevant to that cluster
 
-## How to Use the Workbook
-
-Recommended reading order:
-
-1. start with `control_actions` if the goal is PV, ROC, and SP/OP change mapping
-2. use `alarm_clusters` to understand how the cluster was defined
-3. use `overlapping_alarms` to understand the wider concurrent alarm context
-
-Recommended join field:
-
-- `cluster_id`
-
-## Important Notes
-
-### 1. The workbook preserves the original structure
-
-The consolidated workbook is created as an addition to the original workbook. Original sheets are retained while the enriched analysis sheets are updated.
-
-### 2. The `control_actions` sheet preserves all original rows
-
-The sheet adds context columns on top of the original action rows. It does not remove the original control action history.
-
-### 3. ROC fields in this workbook are window-based change features
-
-The workbook stores normalized change over defined windows. These are ROC-style features for action-context interpretation, not continuous slope estimates.
-
-### 4. Some SSD timing fields can be blank
-
-If an alarm cluster does not match an SSD window, the workbook still keeps the control action rows, but SSD-linked fields such as `deviation_start` and `merged_minutes_from_deviation` remain blank.
-
 ## Generation Logic
 
-The workbook enrichment logic is implemented in:
+The workbook logic is implemented in:
 
-- `EXPERIMENTS/control_actions_context.ipynb`
+- [control_actions_context.ipynb](https://github.com/H604827/ControlActions/blob/main/EXPERIMENTS/control_actions_context.ipynb)
 
 This notebook:
 
