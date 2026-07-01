@@ -1,18 +1,26 @@
 """
 Control Action Algorithm for 03LIC_1071 PVLO Alarm Prevention & Resolution
 
-First-principles approach for the OTS (Operator Training Simulator) scenario.
+First-principles, per-cause supervisory recommender for the OTS (Operator Training
+Simulator). The OTS is a high-fidelity dynamic + DCS (PID) model; it does NOT include
+the APC/MPC layer, so this algorithm acts directly on the regulatory loops.
 
-OTS Fault: "Feed Maximization" — increased feed overloads the propane refrigeration
-section, causing pressure rise (PIC_1013 saturates), increased vaporization, and
-level drop in vessel 3E107 (03LIC_1071).
+OTS faults (all injected with controllers in AUTO):
+  1-3. Feed Gas Disturbance (FI1000 high, ~500/480/460 T/day) -> 03LIC_1071 level falls.
+  4.   Compressor-speed disturbance (03PIC_1013.OP up -> suction pressure falls) -> level falls.
 
-Algorithm Design:
-- Monitors 03LIC_1071.PV rate of change
-- Severity scales with rate of fall and proximity to alarm threshold
-- Actions: MODE → MANUAL + OP changes on selected tags
-- Action magnitude proportional to severity
-- Respects response lag: waits before re-evaluating after action
+Engine (three independent pieces):
+  - DIRECTION  : fixed by the 3E107 mass balance (physics), not data fitting.
+                 Feed cause     -> INCREASE 03LIC_1071 (open inflow to raise level).
+                 Pressure cause -> DECREASE 03PIC_1013 OP (lower compressor speed ->
+                 raise suction pressure -> suppress propane flashing -> level recovers).
+  - LEVER      : selected from the RCA cause tag(s) (cause -> lever map; 1071-OP fallback).
+  - MAGNITUDE  : severity-scaled proportional law,
+                 magnitude = severity_factor x base_step x aggressiveness,
+                 where severity = depth below 28.75 + rate of fall.
+
+Supply cascade: 1071 draws liquid from tank 1016. Opening 1071 inflow draws 1016 down,
+so a guard raises 03LIC_1016 OP when 1016 level nears its low limit (or 1071 OP saturates).
 
 Trigger modes:
 - PREVENTION: Triggered before alarm (PV still above 28.75 but falling)
@@ -62,7 +70,57 @@ OP_LIMITS = {
     '03LIC_3153': {'min': 0.0, 'max': 100.0, 'normal': None},
     '03FIC_3435': {'min': 0.0, 'max': 100.0, 'normal': None},
     '03FIC_1085': {'min': 0.0, 'max': 105.0, 'normal': 38.0},
+    # 1016 supply tank — feeds liquid to 1071 (cascade guard target)
+    '03LIC_1016': {'min': 0.0, 'max': 100.0, 'normal': 38.0},
 }
+
+# --- 1016 supply-tank guard (03LIC_1016 supplies liquid to 03LIC_1071) ---
+# Values approximate; confirm against live OTS limits.
+LEVEL_LOW_1016 = 38.0      # 03LIC_1016.PV operating-low limit
+LEVEL_MARGIN_1016 = 1.0    # start guarding this far above the low limit
+OP_SAT_MARGIN = 3.0        # how close to OP max counts as 'saturated'
+SP_MAX_STEP = 3.0          # cap on a single 03LIC_1071 SP step (level %)
+BASE_STEP = 2.0            # median operator OP step (physically sensible, not fitted)
+
+# --- Cause -> lever mapping (RCA-driven) ---
+# RCA hands us the cause tag(s); each maps to one primary first-principles lever.
+LEVERS = {
+    'feed': {
+        'name': 'feed',
+        'tag': '03LIC_1071',
+        'raise_direction': 'increase',   # increase 1071 to raise level
+        'base_step': BASE_STEP,
+        'response_lag': RESPONSE_LAG_LIC_1071,
+        'allow_sp': True,                # may use SP (AUTO) or OP (MANUAL)
+    },
+    'pressure': {
+        'name': 'pressure',
+        'tag': '03PIC_1013',
+        'raise_direction': 'decrease',   # decrease 1013 OP to raise suction pressure
+        'base_step': BASE_STEP,
+        'response_lag': RESPONSE_LAG_PIC_1013,
+        'allow_sp': False,               # operators never move 1013 SP — OP only
+    },
+}
+
+
+def _normalize_tag(tag) -> str:
+    """Uppercase, drop .PV/.OP/.SP suffix and underscores for tolerant matching."""
+    t = str(tag).upper().strip()
+    for suf in ('.PV', '.OP', '.SP'):
+        if t.endswith(suf):
+            t = t[:-3]
+    return t.replace(' ', '').replace('_', '')
+
+
+def map_cause_to_lever(cause_tag) -> Optional[str]:
+    """Map an RCA cause tag to a lever name ('feed'/'pressure'), or None if unknown."""
+    n = _normalize_tag(cause_tag)
+    if 'PIC1013' in n:
+        return 'pressure'
+    if 'FI1000' in n:
+        return 'feed'
+    return None
 
 
 # ==============================================================================
@@ -80,6 +138,7 @@ class Severity(Enum):
 class ActionType(Enum):
     MODE_CHANGE = "MODE"
     OP_CHANGE = "OP"
+    SP_CHANGE = "SP"
 
 
 @dataclass
@@ -88,9 +147,9 @@ class PlantState:
     timestamp: object  # pd.Timestamp
     pv_1071: float     # Current level PV (%)
     op_1071: float     # Current level controller OP (%)
-    pv_pic_1013: float  # Current pressure (kPa)
-    op_pic_1013: float  # Current pressure controller OP (%)
-    fi_1000: float     # Current feed rate
+    pv_pic_1013: Optional[float] = None  # Current pressure (bar); optional
+    op_pic_1013: Optional[float] = None  # Current pressure controller OP (%); optional
+    fi_1000: Optional[float] = None      # Current feed rate; optional (unused by engine)
 
     # Rate of change (computed over rolling window)
     roc_1071: float = 0.0     # d(PV)/dt for level (per minute)
@@ -101,18 +160,28 @@ class PlantState:
     op_lic_3178: Optional[float] = None
     pv_fic_3435: Optional[float] = None
 
+    # Supply tank 1016 (feeds 1071) — for the cascade guard
+    pv_1016: Optional[float] = None
+    op_1016: Optional[float] = None
+
+    # 1071 setpoint and loop mode — for the OP-vs-SP decision
+    sp_1071: Optional[float] = None
+    mode_1071: Optional[str] = None   # 'AUTO' / 'MAN' (None -> assume AUTO)
+
 
 @dataclass
 class ControlAction:
     """A single control action to execute."""
-    tag: str                    # Tag to act on (e.g., '03HIC_3100')
-    action_type: ActionType     # MODE or OP
-    value: float               # New value (for MODE: 1=MANUAL, 0=AUTO; for OP: target OP)
-    direction: str             # 'increase' or 'decrease' (for OP)
-    magnitude: float           # Absolute change in OP units
+    tag: str                    # Tag to act on (e.g., '03LIC_1071')
+    action_type: ActionType     # OP_CHANGE or SP_CHANGE
+    value: float               # Step SIZE to apply (caller adds to current OP/SP)
+    direction: str             # 'increase' or 'decrease'
+    magnitude: float           # Absolute change in OP/SP units
     reason: str                # Human-readable explanation
     priority: int              # Execution order (1 = first)
     response_lag_minutes: int  # Expected time before effect visible
+    mode_to_manual: bool = False        # Switch loop to MANUAL before applying (OP moves)
+    target_value: Optional[float] = None  # Concrete target OP/SP when known (clamped)
     
     @property
     def step(self) -> float:
@@ -149,98 +218,57 @@ class ControlActionAlgorithm:
     The caller is responsible for not re-calling within the response lag window.
     """
 
-    def __init__(self, 
-                 action_tags: Optional[list] = None,
+    def __init__(self,
+                 levers: Optional[dict] = None,
                  aggressiveness: float = 1.0):
         """
         Parameters
         ----------
-        action_tags : list, optional
-            Override default action tag set. Each entry is a dict with:
-            {'tag': str, 'direction': str, 'tier': int, 'max_step': float, 'response_lag': int}
+        levers : dict, optional
+            Override the default lever configuration (keyed by lever name).
+            Defaults to LEVERS: feed -> 03LIC_1071, pressure -> 03PIC_1013.
         aggressiveness : float
-            Multiplier on action magnitude (1.0 = nominal, 0.5 = conservative, 2.0 = aggressive).
-            Use for tuning on OTS.
+            Multiplier on action magnitude (1.0 = nominal, 0.5 = conservative,
+            2.0 = aggressive). The single OTS-tuning knob.
         """
         self.aggressiveness = aggressiveness
-        
-        if action_tags is not None:
-            self.action_tags = action_tags
-        else:
-            self.action_tags = self._default_action_tags()
-    
-    def _default_action_tags(self) -> list:
+        self.levers = levers if levers is not None else LEVERS
+
+    def all_lever_tags(self) -> list:
+        """Tags the algorithm may ever act on (levers + the 1016 supply guard)."""
+        tags = [cfg['tag'] for cfg in self.levers.values()]
+        if '03LIC_1016' not in tags:
+            tags.append('03LIC_1016')
+        return tags
+
+    def select_levers(self, rca_cause_tags=None) -> list:
         """
-        Default action tag configuration for the 'feed maximization' OTS fault.
-        
-        Tiered approach:
-        - Tier 1: Not used (03LIC_1071 PID handles this itself)
-        - Tier 2: Pressure path (03PIC_1013) — only if not saturated
-        - Tier 3: Load reduction (HIC tags) — primary operator strategy
-        - Tier 4: Retention/recirculation (LIC_3178, LIC_3153, FIC_3435)
-        
-        Direction logic (from ±30 min window analysis of 525 alarm clusters):
-        - 'decrease' = reduce OP to reduce throughput/outflow
-        - 'increase' = increase OP to increase retention/inflow
-        
-        max_step: Maximum single-scan OP change.
-        Calibrated from median operator step sizes within ±30 min of alarm:
-          - HIC tags: median step = 2.0, used as max_step (operators do multiple 2-unit steps)
-          - FIC_3435: median step = 2.0
-          - PIC_1013: median step = 2.0 (but many small 0.1 steps from APC)
-          - PIC_3131: median decrease step = 2.0
-          - LIC_3153/3178: median increase step = 2.0
+        Map RCA cause tag(s) to lever config(s).
+
+        If no cause tags are given, fall back to the feed lever — raising the
+        level via 03LIC_1071 is the universal remedy for a low level.
+        Any cause tag we don't recognise also falls back to the feed lever.
         """
-        return [
-            # Tier 2: Pressure path
-            # PIC_1013: 51% decrease pre-alarm (operators try to relieve pressure)
-            # Post-alarm: 58% INCREASE — meaning operators RESTORE it after stabilization
-            # → The alarm-response action is DECREASE (same as pre-alarm intent)
-            # PIC_3131: 94% decrease pre-alarm, present in 33 clusters
-            {'tag': '03PIC_3131', 'direction': 'decrease', 'tier': 2,
-             'max_step': 2.0, 'response_lag': RESPONSE_LAG_PIC_1013,
-             'reason': 'Reduce pressure (suction) to decrease propane vaporization'},
-            {'tag': '03PIC_1013', 'direction': 'decrease', 'tier': 2,
-             'max_step': 2.0, 'response_lag': RESPONSE_LAG_PIC_1013,
-             'reason': 'Reduce discharge pressure control'},
-            
-            # Tier 3: Load reduction
-            # These tags are acted on both pre-alarm AND post-alarm with consistent DECREASE
-            # HIC_3100: 72% decrease pre, 71% decrease post — strongest and most consistent
-            # HIC_1141: 73% decrease pre, 78% decrease post — very consistent
-            # HIC_1151: 72% decrease pre, 51% decrease post — consistent pre, mixed post
-            # 02HIC_1087: 71% decrease pre, 63% decrease post — consistent
-            # 02HIC_1050: 64% decrease pre, 78% decrease post — consistent
-            {'tag': '03HIC_3100', 'direction': 'decrease', 'tier': 3,
-             'max_step': 2.0, 'response_lag': RESPONSE_LAG_LOAD_REDUCTION,
-             'reason': 'Reduce plant load (present in 99 clusters, 72% decrease)'},
-            {'tag': '03HIC_1141', 'direction': 'decrease', 'tier': 3,
-             'max_step': 2.0, 'response_lag': RESPONSE_LAG_LOAD_REDUCTION,
-             'reason': 'Reduce heater load (present in 58 clusters, 73% decrease)'},
-            {'tag': '03HIC_1151', 'direction': 'decrease', 'tier': 3,
-             'max_step': 2.0, 'response_lag': RESPONSE_LAG_LOAD_REDUCTION,
-             'reason': 'Reduce throughput (present in 143 clusters, 72% decrease pre-alarm)'},
-            {'tag': '02HIC_1087', 'direction': 'decrease', 'tier': 3,
-             'max_step': 2.0, 'response_lag': RESPONSE_LAG_LOAD_REDUCTION,
-             'reason': 'Reduce upstream feed rate (present in 40 clusters, 71% decrease)'},
-            {'tag': '02HIC_1050', 'direction': 'decrease', 'tier': 3,
-             'max_step': 2.0, 'response_lag': RESPONSE_LAG_LOAD_REDUCTION,
-             'reason': 'Reduce upstream compressor load (present in 41 clusters, 78% decrease post)'},
-            
-            # Tier 4: Retention / recirculation
-            # FIC_3435: 69% increase pre-alarm, 64% increase post — MOST FREQUENT tag (227 clusters)
-            # LIC_3153: 79% increase pre, 81% increase post — very consistent direction
-            # LIC_3178: 77% increase pre (small n=30), 70% increase post
-            {'tag': '03FIC_3435', 'direction': 'increase', 'tier': 4,
-             'max_step': 2.0, 'response_lag': RESPONSE_LAG_RETENTION,
-             'reason': 'Increase propane recirculation (most acted tag, 227 clusters, 69% increase)'},
-            {'tag': '03LIC_3153', 'direction': 'increase', 'tier': 4,
-             'max_step': 2.0, 'response_lag': RESPONSE_LAG_RETENTION,
-             'reason': 'Increase downstream liquid retention (81% increase post-alarm)'},
-            {'tag': '03LIC_3178', 'direction': 'increase', 'tier': 4,
-             'max_step': 2.0, 'response_lag': RESPONSE_LAG_RETENTION,
-             'reason': 'Increase liquid retention in propane loop (70% increase post-alarm)'},
-        ]
+        if not rca_cause_tags:
+            return [self.levers['feed']]
+        selected, seen = [], set()
+        for tag in rca_cause_tags:
+            name = map_cause_to_lever(tag) or 'feed'
+            if name in self.levers and name not in seen:
+                selected.append(self.levers[name])
+                seen.add(name)
+        return selected or [self.levers['feed']]
+
+    def _magnitude(self, severity_factor: float, base_step: float = BASE_STEP) -> float:
+        """severity_factor x base_step x aggressiveness; floored at 0.5, rounded to 0.5."""
+        mag = severity_factor * base_step * self.aggressiveness
+        if mag < 0.5:
+            return 0.0
+        return round(mag * 2) / 2
+
+    def _clamp(self, tag: str, value: float) -> float:
+        lim = OP_LIMITS.get(tag, {'min': 0.0, 'max': 100.0})
+        return max(lim['min'], min(lim['max'], value))
 
     def assess_severity(self, state: PlantState) -> tuple:
         """
@@ -273,19 +301,29 @@ class ControlActionAlgorithm:
         rate_magnitude = abs(min(roc, 0))  # only care about falling
         
         if margin <= 0:
-            # Already in alarm — severity based on how deep and how fast still falling
-            if rate_magnitude > ROC_SEVERE:
+            # Already in alarm — RESOLUTION mode.
+            # Keep pushing until PV climbs back above the threshold. Do NOT
+            # de-escalate just because the fall has stopped: a level sitting
+            # below 28.75 is still an active alarm that must be resolved.
+            # Severity is driven by how deep below the limit we are AND the rate.
+            depth = ALARM_THRESHOLD - pv  # >= 0, how far below the alarm limit
+
+            if depth > 8.0 or rate_magnitude > ROC_SEVERE:
                 severity = Severity.CRITICAL
-                diagnosis = f"IN ALARM. PV={pv:.1f} (below {ALARM_THRESHOLD}), still falling at {roc:.3f}/min"
-            elif rate_magnitude > ROC_MODERATE:
+            elif depth > 3.0 or rate_magnitude > ROC_MODERATE:
                 severity = Severity.SEVERE
-                diagnosis = f"IN ALARM. PV={pv:.1f}, falling at {roc:.3f}/min"
-            elif roc < -ROC_NOISE_FLOOR:
-                severity = Severity.MODERATE
-                diagnosis = f"IN ALARM. PV={pv:.1f}, slow fall at {roc:.3f}/min"
             else:
-                severity = Severity.MILD
-                diagnosis = f"IN ALARM but stabilizing. PV={pv:.1f}, roc={roc:.3f}/min"
+                # Shallow and not falling fast — still in alarm, keep acting
+                severity = Severity.MODERATE
+
+            if rate_magnitude <= ROC_NOISE_FLOOR:
+                trend = "flat"
+            elif roc < 0:
+                trend = f"still falling at {roc:.3f}/min"
+            else:
+                trend = f"recovering at {roc:.3f}/min"
+            diagnosis = (f"IN ALARM (resolution). PV={pv:.1f}, "
+                         f"{depth:.1f} below limit, {trend}")
         
         elif time_to_alarm < 5:
             # About to alarm (< 5 min)
@@ -328,123 +366,154 @@ class ControlActionAlgorithm:
         }
         base = factors[severity]
         
-        # Refine within band based on time_to_alarm
+        # Already in alarm at CRITICAL — full power
         if severity == Severity.CRITICAL and time_to_alarm <= 0:
-            # Already in alarm — full power
             return 1.0
-        elif time_to_alarm < 5 and time_to_alarm > 0:
-            # Urgency boost within last 5 minutes
+        # Urgency boost in the final minutes before the alarm (prevention only)
+        if 0 < time_to_alarm < 5:
             return base + (1.0 - base) * (1 - time_to_alarm / 5)
         
         return base
 
-    def select_action_tiers(self, severity: Severity, state: PlantState) -> list:
+    def _choose_1071_variable(self, severity: Severity, state: PlantState) -> str:
         """
-        Determine which tiers of action to engage based on severity.
-        
-        Progressive engagement:
-        - MILD: Monitor only (no actions, or very gentle Tier 4)
-        - MODERATE: Tier 4 (retention) + Tier 2 if pressure not saturated
-        - SEVERE: Tier 2 + 3 + 4
-        - CRITICAL: All tiers, maximum response
-        """
-        tiers_to_engage = set()
-        
-        if severity == Severity.NONE:
-            return []
-        
-        if severity.value >= Severity.MILD.value:
-            tiers_to_engage.add(4)  # Retention — gentlest
-        
-        if severity.value >= Severity.MODERATE.value:
-            # Add pressure path if PIC_1013 is not already saturated
-            pic_headroom = state.op_pic_1013 - OP_LIMITS['03PIC_1013']['min']
-            if pic_headroom > 5:  # At least 5% OP room to decrease
-                tiers_to_engage.add(2)
-        
-        if severity.value >= Severity.SEVERE.value:
-            tiers_to_engage.add(3)  # Load reduction — the big lever
-            tiers_to_engage.add(2)  # Pressure regardless of saturation (try anyway)
-        
-        return sorted(tiers_to_engage)
+        Decide whether to move 03LIC_1071 via OP (MODE->MANUAL) or SP (in AUTO).
 
-    def compute_actions(self, state: PlantState) -> AlgorithmOutput:
+        - In alarm, or SEVERE/CRITICAL (deep/fast): MODE->MANUAL + OP for a fast,
+          direct level boost.
+        - Mild/moderate prevention with the loop in AUTO and a known SP: nudge the
+          SP up gently and let the PID do the work.
+        - If the SP is unknown, default to OP.
         """
-        Main algorithm entry point. Given current state, produce control actions.
-        
+        in_alarm = state.pv_1071 < ALARM_THRESHOLD
+        if in_alarm or severity.value >= Severity.SEVERE.value:
+            return 'OP'
+        if state.sp_1071 is not None and (state.mode_1071 in (None, 'AUTO')):
+            return 'SP'
+        return 'OP'
+
+    def _feed_actions(self, state: PlantState, severity: Severity,
+                      severity_factor: float) -> list:
+        """Feed lever: raise level via 03LIC_1071 (OP or SP) + 1016 supply guard."""
+        actions = []
+        mag = self._magnitude(severity_factor)
+        if mag > 0:
+            variable = self._choose_1071_variable(severity, state)
+            if variable == 'OP':
+                cur = state.op_1071
+                target = self._clamp('03LIC_1071', cur + mag) if cur is not None else None
+                actions.append(ControlAction(
+                    tag='03LIC_1071', action_type=ActionType.OP_CHANGE,
+                    value=mag, direction='increase', magnitude=mag,
+                    reason='Feed disturbance: open 03LIC_1071 inflow to raise level',
+                    priority=0, response_lag_minutes=RESPONSE_LAG_LIC_1071,
+                    mode_to_manual=(state.mode_1071 != 'MAN'), target_value=target))
+            else:
+                sp_mag = min(mag, SP_MAX_STEP)
+                cur = state.sp_1071
+                target = (cur + sp_mag) if cur is not None else None
+                actions.append(ControlAction(
+                    tag='03LIC_1071', action_type=ActionType.SP_CHANGE,
+                    value=sp_mag, direction='increase', magnitude=sp_mag,
+                    reason='Feed disturbance: raise 03LIC_1071 level setpoint (gentle, AUTO)',
+                    priority=0, response_lag_minutes=RESPONSE_LAG_LIC_1071,
+                    mode_to_manual=False, target_value=target))
+        guard = self._supply_guard_1016(state, severity_factor)
+        if guard is not None:
+            actions.append(guard)
+        return actions
+
+    def _pressure_actions(self, state: PlantState, severity_factor: float) -> list:
+        """Pressure lever: decrease 03PIC_1013 OP to raise suction pressure."""
+        mag = self._magnitude(severity_factor)
+        if mag <= 0:
+            return []
+        cur = state.op_pic_1013
+        target = self._clamp('03PIC_1013', cur - mag) if cur is not None else None
+        return [ControlAction(
+            tag='03PIC_1013', action_type=ActionType.OP_CHANGE,
+            value=mag, direction='decrease', magnitude=mag,
+            reason=('Compressor-speed disturbance: lower 03PIC_1013 OP -> reduce speed '
+                    '-> raise suction pressure -> suppress propane flashing -> level recovers'),
+            priority=0, response_lag_minutes=RESPONSE_LAG_PIC_1013,
+            mode_to_manual=True, target_value=target)]
+
+    def _supply_guard_1016(self, state: PlantState, severity_factor: float):
+        """
+        Cascade guard: 1071 draws liquid from tank 1016. When 1016 nears its low
+        limit (or 1071 OP is saturated and can't pull more), raise 03LIC_1016 OP
+        to refill the supply tank so 1071 keeps a liquid source.
+        """
+        if state.pv_1016 is None:
+            return None
+        floor = LEVEL_LOW_1016 + LEVEL_MARGIN_1016
+        low_1016 = state.pv_1016 < floor
+        op_1071_sat = (state.op_1071 is not None and
+                       state.op_1071 >= OP_LIMITS['03LIC_1071']['max'] - OP_SAT_MARGIN)
+        if not (low_1016 or op_1071_sat):
+            return None
+        mag = self._magnitude(severity_factor)
+        if mag <= 0:
+            return None
+        cur = state.op_1016
+        target = self._clamp('03LIC_1016', cur + mag) if cur is not None else None
+        why = []
+        if low_1016:
+            why.append(f'1016 level {state.pv_1016:.1f} near low limit {LEVEL_LOW_1016:.1f}')
+        if op_1071_sat:
+            why.append('1071 OP near saturation')
+        return ControlAction(
+            tag='03LIC_1016', action_type=ActionType.OP_CHANGE,
+            value=mag, direction='increase', magnitude=mag,
+            reason='Supply guard: refill 03LIC_1016 (feeds 1071) - ' + '; '.join(why),
+            priority=0, response_lag_minutes=RESPONSE_LAG_LIC_1071,
+            mode_to_manual=True, target_value=target)
+
+
+    def compute_actions(self, state: PlantState, rca_cause_tags=None) -> AlgorithmOutput:
+        """
+        Main entry point. Given the current state and the RCA cause tag(s),
+        produce severity-scaled control actions on the cause-selected lever(s).
+
         Parameters
         ----------
         state : PlantState
-            Current snapshot of all relevant tag values and rates.
-            
+            Current snapshot of relevant tag values and rates.
+        rca_cause_tags : list, optional
+            Cause tag(s) from the upstream RCA module. If None, defaults to the
+            feed lever (03LIC_1071) — raising the level is the universal remedy.
+
         Returns
         -------
-        AlgorithmOutput with severity, time_to_alarm, and list of ControlActions.
+        AlgorithmOutput with severity, time_to_alarm, and a list of ControlActions.
         """
-        # Step 1: Assess severity
         severity, time_to_alarm, diagnosis = self.assess_severity(state)
-        
+
         output = AlgorithmOutput(
             timestamp=state.timestamp,
             severity=severity,
             time_to_alarm_minutes=time_to_alarm,
             diagnosis=diagnosis,
-            actions=[]
+            actions=[],
         )
-        
+
         if severity == Severity.NONE:
             return output
-        
-        # Step 2: Determine severity factor (0→1)
+
         sf = self.compute_severity_factor(severity, time_to_alarm)
-        
-        # Step 3: Select which tiers to engage
-        tiers = self.select_action_tiers(severity, state)
-        
-        if not tiers:
-            return output
-        
-        # Step 4: Compute action magnitude for each tag in engaged tiers
-        priority = 1
-        for tag_config in self.action_tags:
-            if tag_config['tier'] not in tiers:
-                continue
-            
-            tag = tag_config['tag']
-            direction = tag_config['direction']
-            max_step = tag_config['max_step']
-            response_lag = tag_config['response_lag']
-            reason = tag_config['reason']
-            
-            # Magnitude = severity_factor × max_step × aggressiveness
-            # With max_step=2.0, at SEVERE (sf=0.75): 2.0 * 0.75 = 1.5
-            # At CRITICAL (sf=1.0): 2.0 * 1.0 = 2.0 (one full operator step)
-            # The aggressiveness multiplier allows multiple steps: 2.0 = two operator steps
-            magnitude = sf * max_step * self.aggressiveness
-            
-            # Floor: below 0.5 is meaningless
-            if magnitude < 0.5:
-                continue
-            
-            # Clamp to max_step
-            magnitude = min(magnitude, max_step)
-            
-            # Round to reasonable precision (0.5 units, as operators do)
-            magnitude = round(magnitude * 2) / 2
-            
-            action = ControlAction(
-                tag=tag,
-                action_type=ActionType.OP_CHANGE,
-                value=magnitude,  # The step SIZE (caller adds to current OP)
-                direction=direction,
-                magnitude=magnitude,
-                reason=reason,
-                priority=priority,
-                response_lag_minutes=response_lag,
-            )
-            output.actions.append(action)
-            priority += 1
-        
+        levers = self.select_levers(rca_cause_tags)
+
+        all_actions = []
+        for lever in levers:
+            if lever['name'] == 'feed':
+                all_actions.extend(self._feed_actions(state, severity, sf))
+            elif lever['name'] == 'pressure':
+                all_actions.extend(self._pressure_actions(state, sf))
+
+        for i, action in enumerate(all_actions, start=1):
+            action.priority = i
+        output.actions = all_actions
+
         return output
 
 
@@ -547,21 +616,39 @@ def build_state_from_data(pv_data_slice, timestamp, roc_window=5):
         idx = pv_data_slice.index.get_indexer([timestamp], method='nearest')[0]
         row = pv_data_slice.iloc[idx]
     
+    # Safe scalar getter: returns None if the column is missing or the value is NaN
+    def _get(col):
+        if col not in pv_data_slice.columns:
+            return None
+        v = row[col]
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        return None if f != f else f
+
+    pv_1071 = _get('03LIC_1071.PV')
+    op_1071 = _get('03LIC_1071.OP')
+    if pv_1071 is None or op_1071 is None:
+        raise KeyError("build_state_from_data requires 03LIC_1071.PV and 03LIC_1071.OP")
+
     # Rate of change over window
     window_start = timestamp - np.timedelta64(roc_window, 'm')
     pv_window = pv_data_slice.loc[window_start:timestamp, '03LIC_1071.PV'].values
     roc_1071 = compute_rate_of_change(pv_window, window=roc_window, method='regression')
-    
-    pic_window = pv_data_slice.loc[window_start:timestamp, '03PIC_1013.PV'].values
-    roc_pic_1013 = compute_rate_of_change(pic_window, window=roc_window, method='regression')
-    
+
+    roc_pic_1013 = 0.0
+    if '03PIC_1013.PV' in pv_data_slice.columns:
+        pic_window = pv_data_slice.loc[window_start:timestamp, '03PIC_1013.PV'].values
+        roc_pic_1013 = compute_rate_of_change(pic_window, window=roc_window, method='regression')
+
     state = PlantState(
         timestamp=timestamp,
-        pv_1071=float(row['03LIC_1071.PV']),
-        op_1071=float(row['03LIC_1071.OP']),
-        pv_pic_1013=float(row['03PIC_1013.PV']),
-        op_pic_1013=float(row['03PIC_1013.OP']),
-        fi_1000=float(row['02FI_1000.PV']),
+        pv_1071=pv_1071,
+        op_1071=op_1071,
+        pv_pic_1013=_get('03PIC_1013.PV'),
+        op_pic_1013=_get('03PIC_1013.OP'),
+        fi_1000=_get('02FI_1000.PV'),
         roc_1071=roc_1071,
         roc_pic_1013=roc_pic_1013,
     )
@@ -573,8 +660,152 @@ def build_state_from_data(pv_data_slice, timestamp, roc_window=5):
         state.op_lic_3178 = float(row['03LIC_3178.OP'])
     if '03FIC_3435.PV' in pv_data_slice.columns:
         state.pv_fic_3435 = float(row['03FIC_3435.PV'])
-    
+
+    # Supply tank 1016, plus 1071 setpoint (all optional in the data)
+    for col, attr in (('03LIC_1016.PV', 'pv_1016'),
+                      ('03LIC_1016.OP', 'op_1016'),
+                      ('03LIC_1071.SP', 'sp_1071')):
+        if col in pv_data_slice.columns:
+            v = row[col]
+            if v == v:  # skip NaN (NaN != NaN)
+                setattr(state, attr, float(v))
+    if '03LIC_1071.MODE' in pv_data_slice.columns:
+        m = row['03LIC_1071.MODE']
+        if isinstance(m, str):
+            state.mode_1071 = m
+
     return state
+
+
+# ==============================================================================
+# SNAPSHOT ENTRY POINT — run the algorithm on a time-series snapshot
+# ==============================================================================
+
+def suggest_actions_from_snapshot(df, algo=None, roc_window=5,
+                                  timestamp_col='TimeStamp', rca_cause_tags=None):
+    """
+    Run the control-action algorithm on a time-series snapshot that ends at (or
+    just before) the moment of interest — e.g. data ending just before the
+    03LIC_1071 PVLO alarm limit is hit.
+
+    This is the PREVENTION entry point: give it the recent history of all tags
+    and it returns the control actions the algorithm would recommend right now.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Time series of all tags. Must contain at least:
+          - '03LIC_1071.PV', '03LIC_1071.OP'
+          - '03PIC_1013.PV', '03PIC_1013.OP'
+          - '02FI_1000.PV'
+        TimeStamp may be the index OR a column named `timestamp_col`.
+        Should contain at least `roc_window` minutes of history so the rate of
+        change can be computed. The LAST row is treated as "now".
+    algo : ControlActionAlgorithm, optional
+        Algorithm instance. A default one is created if None.
+    roc_window : int
+        Minutes of history used to estimate rate of change.
+    timestamp_col : str
+        Name of the timestamp column if TimeStamp is not already the index.
+
+    Returns
+    -------
+    (AlgorithmOutput, PlantState, dict)
+        output  : the algorithm result (severity, time_to_alarm, actions)
+        state   : the PlantState built from the final row
+        current_ops : {tag: current OP value} for every action tag present in df
+                      (useful to compute concrete target OPs for execution)
+    """
+    import pandas as pd
+
+    if algo is None:
+        algo = ControlActionAlgorithm()
+
+    data = df.copy()
+
+    # Accept OTS-style underscore column names (e.g. 03LIC_1071_PV -> 03LIC_1071.PV)
+    if not any(str(c).endswith('.PV') for c in data.columns):
+        import re
+        data.columns = [re.sub(r'_(PV|OP|SP|MODE)$', r'.\1', str(c)) for c in data.columns]
+
+    # Normalise timestamp to a sorted DatetimeIndex
+    if timestamp_col in data.columns:
+        data[timestamp_col] = pd.to_datetime(data[timestamp_col])
+        data = data.set_index(timestamp_col)
+    else:
+        data.index = pd.to_datetime(data.index)
+    data = data.sort_index()
+
+    if data.empty:
+        raise ValueError("Snapshot dataframe is empty.")
+
+    # "Now" = the last available timestamp (just before the alarm)
+    now = data.index[-1]
+
+    # Build the plant state from the snapshot
+    state = build_state_from_data(data, now, roc_window=roc_window)
+
+    # Run the algorithm (cause tag(s) come from the upstream RCA module)
+    output = algo.compute_actions(state, rca_cause_tags=rca_cause_tags)
+
+    # Collect current OP values for every lever tag we can see, so the caller
+    # can turn the recommended step into a concrete target OP.
+    current_ops = {}
+    last_row = data.iloc[-1]
+    for tag in algo.all_lever_tags():
+        op_col = f'{tag}.OP'
+        if op_col in data.columns and pd.notna(last_row.get(op_col)):
+            current_ops[tag] = float(last_row[op_col])
+
+    return output, state, current_ops
+
+
+def format_snapshot_result(output, state, current_ops=None):
+    """
+    Human-readable summary of a snapshot run, including concrete target OPs
+    when current OP values are available.
+    """
+    lines = []
+    lines.append("=" * 68)
+    lines.append(f"SNAPSHOT @ {state.timestamp}")
+    lines.append("=" * 68)
+    lines.append(f"  03LIC_1071.PV : {state.pv_1071:.2f}   (alarm limit {ALARM_THRESHOLD})")
+    lines.append(f"  Rate of change: {state.roc_1071:+.3f} /min")
+    def _fmt(v, p):
+        return f"{v:.{p}f}" if v is not None else "n/a"
+    lines.append(f"  03PIC_1013.PV : {_fmt(state.pv_pic_1013, 1)}   OP: {_fmt(state.op_pic_1013, 1)}")
+    lines.append(f"  02FI_1000.PV  : {_fmt(state.fi_1000, 3)}")
+    lines.append("")
+    lines.append(f"  Severity      : {output.severity.name}")
+    t = output.time_to_alarm_minutes
+    t_str = "inf (not falling)" if t == float('inf') else f"{t:.1f} min"
+    lines.append(f"  Time to alarm : {t_str}")
+    lines.append(f"  Diagnosis     : {output.diagnosis}")
+    lines.append("")
+
+    if not output.actions:
+        lines.append("  RECOMMENDED ACTIONS: none (monitor only)")
+        return '\n'.join(lines)
+
+    lines.append(f"  RECOMMENDED ACTIONS ({len(output.actions)}):")
+    current_ops = current_ops or {}
+    for a in output.actions:
+        var = a.action_type.value  # 'OP' or 'SP'
+        prefix = "MODE->MANUAL, " if a.mode_to_manual else ""
+        if a.target_value is not None:
+            tgt_str = f"  [{var} -> {a.target_value:.1f}]"
+        else:
+            cur = current_ops.get(a.tag)
+            if cur is not None and a.action_type == ActionType.OP_CHANGE:
+                limits = OP_LIMITS.get(a.tag, {'min': 0.0, 'max': 100.0})
+                target = max(limits['min'], min(limits['max'], cur + a.step))
+                tgt_str = f"  [{cur:.1f} -> {target:.1f}]"
+            else:
+                tgt_str = ""
+        lines.append(f"    #{a.priority} {prefix}{a.tag}.{var} {a.direction} "
+                     f"by {a.magnitude:.1f}{tgt_str}")
+        lines.append(f"        wait {a.response_lag_minutes} min - {a.reason}")
+    return '\n'.join(lines)
 
 
 # ==============================================================================
@@ -584,7 +815,8 @@ def build_state_from_data(pv_data_slice, timestamp, roc_window=5):
 def replay_episode(pv_data, episode_start, episode_end, 
                    trigger_offset_minutes=10,
                    algo=None,
-                   scan_interval_minutes=1):
+                   scan_interval_minutes=1,
+                   rca_cause_tags=None):
     """
     Replay an alarm episode: trigger algorithm at a specified time before/after alarm
     and collect its recommendations over the episode duration.
@@ -640,7 +872,7 @@ def replay_episode(pv_data, episode_start, episode_end,
             current_time = episode_data.index[idx]
         
         state = build_state_from_data(episode_data, current_time)
-        output = algo.compute_actions(state)
+        output = algo.compute_actions(state, rca_cause_tags=rca_cause_tags)
         results.append(output)
         
         current_time += pd.Timedelta(minutes=scan_interval_minutes)
@@ -658,8 +890,10 @@ def format_output(output: AlgorithmOutput) -> str:
     if output.actions:
         lines.append(f"  Actions ({len(output.actions)}):")
         for a in output.actions:
-            lines.append(f"    #{a.priority} {a.tag}.OP {a.direction} by {a.magnitude:.1f} "
-                        f"(wait {a.response_lag_minutes}min) — {a.reason}")
+            var = a.action_type.value
+            prefix = "MODE->MANUAL " if a.mode_to_manual else ""
+            lines.append(f"    #{a.priority} {prefix}{a.tag}.{var} {a.direction} by {a.magnitude:.1f} "
+                        f"(wait {a.response_lag_minutes}min) - {a.reason}")
     else:
         lines.append("  Actions: NONE (monitor only)")
     
@@ -716,18 +950,22 @@ class ActionExecutionController:
         reason: str
     
     def __init__(self, algo: Optional[ControlActionAlgorithm] = None,
-                 current_op_values: Optional[dict] = None):
+                 current_op_values: Optional[dict] = None,
+                 rca_cause_tags: Optional[list] = None):
         """
         Parameters
         ----------
         algo : ControlActionAlgorithm, optional
         current_op_values : dict, optional
             Initial OP values for tags we might act on.
-            Keys: tag name (e.g., '03HIC_3100'), Values: current OP (float)
+            Keys: tag name (e.g., '03LIC_1071'), Values: current OP (float)
+        rca_cause_tags : list, optional
+            Cause tag(s) from the upstream RCA module, forwarded to the algorithm.
         """
         self.algo = algo or ControlActionAlgorithm()
         self.tag_states: dict = {}  # tag -> TagState
         self.current_ops: dict = current_op_values or {}
+        self.rca_cause_tags = rca_cause_tags
         self.scan_count = 0
         self.active = False  # Are we currently intervening?
         self.recovery_detected = False
@@ -743,8 +981,8 @@ class ActionExecutionController:
         """
         self.scan_count += 1
         
-        # Get algorithm recommendation
-        output = self.algo.compute_actions(state)
+        # Get algorithm recommendation (cause tag(s) from RCA)
+        output = self.algo.compute_actions(state, rca_cause_tags=self.rca_cause_tags)
         
         # Check for recovery
         if state.roc_1071 > 0.1 and state.pv_1071 > ALARM_THRESHOLD:
@@ -762,7 +1000,12 @@ class ActionExecutionController:
         commands = []
         for action in output.actions:
             tag = action.tag
-            
+
+            # This controller executes OP moves only; SP recommendations are
+            # surfaced by the stateless API and handled separately (out of scope).
+            if action.action_type == ActionType.SP_CHANGE:
+                continue
+
             # Initialize tag state if first time
             if tag not in self.tag_states:
                 self.tag_states[tag] = self.TagState()
